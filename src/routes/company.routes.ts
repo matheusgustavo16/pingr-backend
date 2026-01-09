@@ -9,4 +9,3 @@ router.post("/", authenticate, createCompany);
 router.get("/me", authenticate, getMyCompany);
 
 export default router;
-

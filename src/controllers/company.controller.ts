@@ -14,8 +14,8 @@ export const createCompany = async (req: AuthRequest, res: Response) => {
 
     // Validação de campos obrigatórios
     if (!title) {
-      return res.status(400).json({ 
-        error: "Nome da empresa é obrigatório"
+      return res.status(400).json({
+        error: "Nome da empresa é obrigatório",
       });
     }
 
@@ -31,7 +31,9 @@ export const createCompany = async (req: AuthRequest, res: Response) => {
     });
 
     if (existingCompany) {
-      return res.status(400).json({ error: "Você já possui uma empresa cadastrada" });
+      return res
+        .status(400)
+        .json({ error: "Você já possui uma empresa cadastrada" });
     }
 
     // Normalizar CNPJ: remover formatação (pontos, barras, hífens, espaços)
@@ -72,7 +74,7 @@ export const createCompany = async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error("Erro ao criar empresa:", error);
-    
+
     // Tratar erros específicos do Prisma
     if (error.code === "P2002") {
       return res.status(400).json({ error: "CNPJ já está em uso" });
@@ -116,4 +118,3 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };
-
