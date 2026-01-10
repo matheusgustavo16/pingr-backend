@@ -59,7 +59,7 @@ export const mediasoupConfig = {
     listenIps: [
       {
         ip: "0.0.0.0",
-        announcedIp: "127.0.0.1", // Substitua pelo IP público em prod
+        announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || "127.0.0.1",
       },
     ] as mediasoup.types.TransportListenIp[],
     initialAvailableOutgoingBitrate: 1000000,
