@@ -2,6 +2,7 @@ import { Server as SocketIOServer, Socket } from "socket.io";
 import { AuthenticatedSocket } from "../auth/authenticate";
 import { presenceService } from "../presence/presence-service";
 import { joinRoom, leaveRoom } from "../rooms/room-manager";
+import { handleMediasoupEvents } from "./mediasoup-handler";
 
 export const handleConnection = (io: SocketIOServer, socket: Socket) => {
   const authSocket = socket as AuthenticatedSocket;
@@ -11,6 +12,8 @@ export const handleConnection = (io: SocketIOServer, socket: Socket) => {
     socket.disconnect();
     return;
   }
+
+  handleMediasoupEvents(io, authSocket);
 
   console.log(`🔌 New WS connection: ${user.name} (${socket.id})`);
 
@@ -71,19 +74,6 @@ export const handleConnection = (io: SocketIOServer, socket: Socket) => {
       });
     }
   });
-
-  // Evento: Sinalização WebRTC (Unicast)
-  socket.on(
-    "WEBRTC_SIGNAL",
-    (data: { to: string; signal: any; roomId: string }) => {
-      // Opcional: validar se ambos estão na mesma sala por segurança
-      io.to(data.to).emit("WEBRTC_SIGNAL", {
-        from: user.id,
-        signal: data.signal,
-        roomId: data.roomId,
-      });
-    }
-  );
 
   // Evento: Desconexão
   socket.on("disconnect", () => {
