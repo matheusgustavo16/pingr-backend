@@ -16,9 +16,28 @@ model User {
   password  String?
   picture   String?
 
-  companies Company[]
+  twoFactor      TwoFactor[]
+  ownedCompanies Company[]       @relation("CompanyOwner")
+  memberships    CompanyMember[]
 
   @@map("users")
+}
+
+model TwoFactor {
+  id              String   @id @default(uuid())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  pending         Boolean  @default(true)
+  authTag         String
+  type            String // "TOTP", "SMS", etc
+  secretEnc       String // segredo encriptado
+  secretNonce     String? // se usar AES-GCM
+  backupCodesHash String? // pode ser JSON com hashes
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("two_factors")
 }
 
 model Company {
@@ -29,12 +48,44 @@ model Company {
   cnpj      String?  @unique
   picture   String?
 
-  userId String
-  user   User   @relation(fields: [userId], references: [id])
-
-  rooms Room[]
+  ownerId    String
+  owner      User            @relation("CompanyOwner", fields: [ownerId], references: [id])
+  members    CompanyMember[]
+  rooms      Room[]
+  categories RoomCategory[]
 
   @@map("companies")
+}
+
+model CompanyMember {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  role   CompanyRole  @default(MEMBER)
+  status MemberStatus @default(ACTIVE)
+
+  userId    String
+  companyId String
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([userId, companyId])
+  @@map("company_members")
+}
+
+enum CompanyRole {
+  OWNER
+  ADMIN
+  MEMBER
+  FINANCE
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  PENDING
 }
 
 model RoomCategory {
@@ -43,6 +94,9 @@ model RoomCategory {
   updatedAt DateTime @updatedAt
   emoji     String
   title     String
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
 
   rooms Room[]
 
@@ -65,8 +119,10 @@ model Room {
 }
 
 enum RoomTypes {
+  AUDITORIUM
   OFFICE
   MEETING
   CHAT
   ADVISORY
+  VOICE
 }

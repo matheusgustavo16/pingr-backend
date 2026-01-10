@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "RoomTypes" ADD VALUE 'AUDITORIUM';

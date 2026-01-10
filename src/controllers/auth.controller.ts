@@ -2,13 +2,19 @@ import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../services/prisma.service";
-import { validateEmail, validatePassword, validateName } from "../utils/validation";
+import {
+  validateEmail,
+  validatePassword,
+  validateName,
+} from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
 if (!JWT_SECRET) {
-  console.warn("⚠️  JWT_SECRET não configurado. Configure a variável de ambiente JWT_SECRET.");
+  console.warn(
+    "⚠️  JWT_SECRET não configurado. Configure a variável de ambiente JWT_SECRET."
+  );
 }
 
 export const register = async (req: Request, res: Response) => {
@@ -17,9 +23,9 @@ export const register = async (req: Request, res: Response) => {
 
     // Validação de campos obrigatórios
     if (!name || !email || !password) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Campos obrigatórios faltando",
-        details: "Nome, email e senha são obrigatórios"
+        details: "Nome, email e senha são obrigatórios",
       });
     }
 
@@ -41,9 +47,13 @@ export const register = async (req: Request, res: Response) => {
     }
 
     // Verificar se o usuário já existe
-    const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+    });
     if (existingUser) {
-      return res.status(400).json({ error: "Usuário já existe com este email" });
+      return res
+        .status(400)
+        .json({ error: "Usuário já existe com este email" });
     }
 
     // Hash da senha
@@ -60,7 +70,9 @@ export const register = async (req: Request, res: Response) => {
 
     // Verificar se JWT_SECRET está configurado
     if (!JWT_SECRET) {
-      return res.status(500).json({ error: "Erro de configuração do servidor" });
+      return res
+        .status(500)
+        .json({ error: "Erro de configuração do servidor" });
     }
 
     // Gerar token
@@ -78,7 +90,7 @@ export const register = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Erro no cadastro:", error);
-    
+
     // Tratar erros específicos do Prisma
     if (error.code === "P2002") {
       return res.status(400).json({ error: "Email já está em uso" });
@@ -102,9 +114,22 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Email inválido" });
     }
 
-    // Buscar usuário
-    const user = await prisma.user.findUnique({ 
-      where: { email: email.toLowerCase().trim() } 
+    // Buscar usuário com suas participações em empresas
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+      include: {
+        memberships: {
+          include: {
+            company: {
+              select: {
+                id: true,
+                title: true,
+                picture: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!user || !user.password) {
@@ -119,7 +144,9 @@ export const login = async (req: Request, res: Response) => {
 
     // Verificar se JWT_SECRET está configurado
     if (!JWT_SECRET) {
-      return res.status(500).json({ error: "Erro de configuração do servidor" });
+      return res
+        .status(500)
+        .json({ error: "Erro de configuração do servidor" });
     }
 
     // Gerar token
@@ -133,6 +160,13 @@ export const login = async (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         picture: user.picture,
+        memberships: user.memberships.map((m) => ({
+          companyId: m.companyId,
+          role: m.role,
+          status: m.status,
+          companyName: m.company.title,
+          companyPicture: m.company.picture,
+        })),
       },
       token,
     });

@@ -10,6 +10,12 @@ export interface AuthRequest extends Request {
     id: string;
     name: string;
     email: string;
+    picture?: string | null;
+    memberships?: Array<{
+      companyId: string;
+      role: string;
+      status: string;
+    }>;
   };
 }
 
@@ -26,8 +32,8 @@ export const authenticate = async (
       return;
     }
 
-    const token = authHeader.startsWith("Bearer ") 
-      ? authHeader.substring(7) 
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.substring(7)
       : authHeader;
 
     if (!token) {
@@ -49,6 +55,14 @@ export const authenticate = async (
         id: true,
         name: true,
         email: true,
+        picture: true,
+        memberships: {
+          select: {
+            companyId: true,
+            role: true,
+            status: true,
+          },
+        },
       },
     });
 
@@ -73,4 +87,3 @@ export const authenticate = async (
     res.status(500).json({ error: "Erro interno do servidor" });
   }
 };
-
