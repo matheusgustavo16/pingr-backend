@@ -117,9 +117,17 @@ export const login = async (req: Request, res: Response) => {
     // Buscar usuário com suas participações em empresas
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        password: true,
+        picture: true,
         memberships: {
-          include: {
+          select: {
+            companyId: true,
+            role: true,
+            status: true,
             company: {
               select: {
                 id: true,
@@ -160,7 +168,7 @@ export const login = async (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         picture: user.picture,
-        memberships: user.memberships.map((m: any) => ({
+        memberships: user.memberships.map((m) => ({
           companyId: m.companyId,
           role: m.role,
           status: m.status,
