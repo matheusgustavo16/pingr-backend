@@ -11,6 +11,7 @@ export interface AuthRequest extends Request {
     name: string;
     email: string;
     picture?: string | null;
+    status?: string;
     memberships?: Array<{
       companyId: string;
       role: string;
@@ -56,6 +57,7 @@ export const authenticate = async (
         name: true,
         email: true,
         picture: true,
+        status: true,
         memberships: {
           select: {
             companyId: true,

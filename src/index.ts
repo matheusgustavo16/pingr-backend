@@ -6,6 +6,7 @@ import authRoutes from "./routes/auth.routes";
 import companyRoutes from "./routes/company.routes";
 import roomRoutes from "./routes/room.routes";
 import categoryRoutes from "./routes/category.routes";
+import chatRoutes from "./routes/chat.routes";
 import { WebSocketServer } from "./ws/socket-server";
 
 const app = express();
@@ -28,6 +29,7 @@ app.use("/companies", companyRoutes);
 app.use("/auth", authRoutes);
 app.use("/rooms", roomRoutes);
 app.use("/categories", categoryRoutes);
+app.use("/chat", chatRoutes);
 
 httpServer.listen(port, () => {
   console.log(`🚀 Server is running on http://localhost:${port}`);

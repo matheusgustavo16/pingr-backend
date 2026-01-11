@@ -9,6 +9,7 @@ export interface AuthenticatedSocket extends Socket {
     id: string;
     name: string;
     email: string;
+    picture: string | null;
     roles: string[];
   };
 }
@@ -43,6 +44,7 @@ export const setupAuthMiddleware = async (
         id: true,
         name: true,
         email: true,
+        picture: true,
         // Adicione papéis se existirem no seu esquema Prisma
       },
     });

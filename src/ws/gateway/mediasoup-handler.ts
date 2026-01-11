@@ -44,6 +44,7 @@ export const handleMediasoupEvents = async (
             producerId: producer.id,
             userId: (io.sockets.sockets.get(socketId) as any)?.user?.id,
             kind: producer.kind,
+            appData: producer.appData,
           });
         }
       });
@@ -131,6 +132,7 @@ export const handleMediasoupEvents = async (
             producerId: producer.id,
             userId: socket.user?.id,
             kind: producer.kind,
+            appData: producer.appData,
           });
         }
       } catch (error: any) {

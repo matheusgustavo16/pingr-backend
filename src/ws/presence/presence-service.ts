@@ -3,6 +3,7 @@ import { Server as SocketIOServer } from "socket.io";
 export interface UserPresence {
   userId: string;
   name: string;
+  avatar?: string | null;
   status: "ACTIVE" | "IDLE" | "AWAY";
   lastSeenAt: Date;
   workspaceId?: string;

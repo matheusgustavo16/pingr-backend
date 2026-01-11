@@ -20,6 +20,7 @@ export const handleConnection = (io: SocketIOServer, socket: Socket) => {
   // Inicializar presença
   presenceService.updatePresence(user.id, {
     name: user.name,
+    avatar: user.picture,
     socketId: socket.id,
     status: "ACTIVE",
   });

@@ -29,6 +29,7 @@ export const joinRoom = (
   presenceService.updatePresence(socket.user.id, {
     currentRoomId: roomId,
     name: socket.user.name,
+    avatar: socket.user.picture,
     socketId: socket.id,
   });
 
@@ -36,6 +37,7 @@ export const joinRoom = (
   io.to(roomId).emit("USER_JOINED_ROOM", {
     userId: socket.user.id,
     name: socket.user.name,
+    avatar: socket.user.picture,
     roomId: roomId,
   });
 

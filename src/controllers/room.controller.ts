@@ -2,6 +2,7 @@ import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { RoomTypes } from "@prisma/client";
+import { ChatService } from "../services/chat.service";
 
 export const createRoom = async (req: AuthRequest, res: Response) => {
   try {
@@ -35,22 +36,31 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Tipo de sala inválido" });
     }
 
-    // Criar a sala
-    const room = await prisma.room.create({
-      data: {
-        title: title.trim(),
-        type: roomType,
-        companyId: company.id,
-        categoryId: categoryId || null,
-      },
+    // Criar a sala e o canal de chat (se for tipo CHAT) em uma transação
+    const result = await prisma.$transaction(async (tx) => {
+      const room = await tx.room.create({
+        data: {
+          title: title.trim(),
+          type: roomType,
+          companyId: company.id,
+          categoryId: categoryId || null,
+        },
+      });
+
+      // Criar ChatChannel automaticamente se for tipo CHAT ou ADVISORY
+      if (roomType === RoomTypes.CHAT || roomType === RoomTypes.ADVISORY) {
+        await ChatService.createChannelForRoom(room.id, tx);
+      }
+
+      return room;
     });
 
     return res.status(201).json({
       room: {
-        id: room.id,
-        title: room.title,
-        type: room.type,
-        categoryId: room.categoryId,
+        id: result.id,
+        title: result.title,
+        type: result.type,
+        categoryId: result.categoryId,
       },
     });
   } catch (error) {

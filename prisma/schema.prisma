@@ -7,17 +7,21 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String     @id @default(uuid())
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
   name      String
-  email     String   @unique
+  email     String     @unique
   password  String?
   picture   String?
+  status    UserStatus @default(AVAILABLE)
 
-  twoFactor      TwoFactor[]
-  ownedCompanies Company[]       @relation("CompanyOwner")
-  memberships    CompanyMember[]
+  twoFactor        TwoFactor[]
+  ownedCompanies   Company[]         @relation("CompanyOwner")
+  memberships      CompanyMember[]
+  chatMessages     ChatMessage[]
+  chatReadStates   ChatReadState[]
+  chatParticipants ChatParticipant[]
 
   @@map("users")
 }
@@ -109,10 +113,11 @@ model Room {
   type      RoomTypes @default(OFFICE)
   title     String
 
-  companyId  String
-  company    Company       @relation(fields: [companyId], references: [id])
-  categoryId String?
-  category   RoomCategory? @relation(fields: [categoryId], references: [id])
+  companyId   String
+  company     Company       @relation(fields: [companyId], references: [id])
+  categoryId  String?
+  category    RoomCategory? @relation(fields: [categoryId], references: [id])
+  chatChannel ChatChannel?
 
   @@map("rooms")
 }
@@ -124,4 +129,99 @@ enum RoomTypes {
   CHAT
   ADVISORY
   VOICE
+}
+
+enum UserStatus {
+  AVAILABLE
+  BUSY
+  IN_MEETING
+  AWAY
+  FOCUS
+  CODING
+  REVIEWING
+}
+
+model ChatChannel {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  isArchived Boolean @default(false)
+
+  messages         ChatMessage[]
+  chatReadStates   ChatReadState[]
+  chatParticipants ChatParticipant[]
+
+  @@unique([roomId])
+  @@map("chat_channels")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content String
+  type    MessageType @default(TEXT)
+
+  authorId  String
+  channelId String
+
+  author  User        @relation(fields: [authorId], references: [id])
+  channel ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  isEdited  Boolean @default(false)
+  isDeleted Boolean @default(false)
+  isPinned  Boolean @default(false)
+
+  @@index([channelId, createdAt])
+  @@index([channelId, isPinned])
+  @@map("chat_messages")
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  BOT
+}
+
+model ChatReadState {
+  id        String   @id @default(uuid())
+  updatedAt DateTime @updatedAt
+
+  userId    String
+  channelId String
+
+  lastReadMessageId String?
+
+  user    User        @relation(fields: [userId], references: [id])
+  channel ChatChannel @relation(fields: [channelId], references: [id])
+
+  @@unique([userId, channelId])
+  @@map("chat_read_states")
+}
+
+model ChatParticipant {
+  id       String   @id @default(uuid())
+  joinedAt DateTime @default(now())
+
+  role ChatRole @default(MEMBER)
+
+  userId    String
+  channelId String
+
+  user    User        @relation(fields: [userId], references: [id])
+  channel ChatChannel @relation(fields: [channelId], references: [id])
+
+  @@unique([userId, channelId])
+  @@map("chat_participants")
+}
+
+enum ChatRole {
+  ADMIN
+  MEMBER
+  READ_ONLY
 }

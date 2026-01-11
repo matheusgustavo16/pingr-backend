@@ -123,6 +123,7 @@ export const login = async (req: Request, res: Response) => {
         email: true,
         password: true,
         picture: true,
+        status: true,
         memberships: {
           select: {
             companyId: true,
@@ -150,6 +151,15 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciais inválidas" });
     }
 
+    // Atualizar status para AVAILABLE ao fazer login (se não estiver definido)
+    if (!user.status) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { status: "AVAILABLE" },
+      });
+      user.status = "AVAILABLE";
+    }
+
     // Verificar se JWT_SECRET está configurado
     if (!JWT_SECRET) {
       return res
@@ -168,6 +178,7 @@ export const login = async (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         picture: user.picture,
+        status: user.status,
         memberships: user.memberships.map((m) => ({
           companyId: m.companyId,
           role: m.role,
@@ -186,15 +197,100 @@ export const login = async (req: Request, res: Response) => {
 
 export const getMe = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.user) {
+    if (!req.userId) {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        picture: true,
+        status: true,
+        memberships: {
+          select: {
+            companyId: true,
+            role: true,
+            status: true,
+            company: {
+              select: {
+                id: true,
+                title: true,
+                picture: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+
     return res.json({
-      user: req.user,
+      user: {
+        ...user,
+        memberships: user.memberships.map((m) => ({
+          companyId: m.companyId,
+          role: m.role,
+          status: m.status,
+          companyName: m.company.title,
+          companyPicture: m.company.picture,
+        })),
+      },
     });
   } catch (error) {
     console.error("Erro ao buscar usuário:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const updateStatus = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { status } = req.body;
+
+    // Validar status
+    const validStatuses = [
+      "AVAILABLE",
+      "BUSY",
+      "IN_MEETING",
+      "AWAY",
+      "FOCUS",
+      "CODING",
+      "REVIEWING",
+    ];
+
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        error: "Status inválido",
+        validStatuses,
+      });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: req.userId },
+      data: { status },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        picture: true,
+        status: true,
+      },
+    });
+
+    return res.json({
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Erro ao atualizar status:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

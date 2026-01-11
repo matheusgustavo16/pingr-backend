@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { prisma } from "../services/prisma.service";
 import { validateName } from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
+import { ChatService } from "../services/chat.service";
 
 // O JWT_SECRET deve ser lido preferencialmente dentro das funções ou garantindo que o dotenv foi carregado
 const getSecret = () => process.env.JWT_SECRET || "";
@@ -99,14 +100,18 @@ export const createCompany = async (req: AuthRequest, res: Response) => {
         //   type: "OFFICE",
         //   categoryId: lobbyCategory.id,
         // },
-        {
-          title: "Chat Aberto",
-          companyId: company.id,
-          type: "CHAT",
-          categoryId: lobbyCategory.id,
-        },
       ],
     });
+
+    const room = await prisma.room.create({
+      data: {
+        title: "Chat Aberto",
+        companyId: company.id,
+        type: "CHAT",
+        categoryId: lobbyCategory.id,
+      }
+    });
+    await ChatService.createChannelForRoom(room.id);
 
     return res.status(201).json({
       company: {
