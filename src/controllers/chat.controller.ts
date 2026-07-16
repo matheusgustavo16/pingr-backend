@@ -11,6 +11,7 @@ import {
 } from "../types/chat.types";
 import { WebSocketServer } from "../ws/socket-server";
 import { prisma } from "../services/prisma.service";
+import { LinkPreviewService } from "../services/link-preview.service";
 
 /**
  * Lista mensagens de um canal (paginado)
@@ -60,7 +61,7 @@ export const listMessages = async (req: AuthRequest, res: Response) => {
 export const sendMessage = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
-    const { content, type, channelId } = req.body;
+    const { content, type, channelId, botId } = req.body;
 
     if (!userId) {
       return res.status(401).json({ error: "Usuário não autenticado" });
@@ -80,6 +81,7 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       content,
       type,
       channelId,
+      botId,
     };
 
     const message = await ChatService.sendMessage(input, userId);
@@ -90,11 +92,16 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       const io = wsServer.getIO();
       const channel = await ChatService.getChannel(channelId);
       if (channel) {
-        // Emitir para todos os participantes do canal (usando roomId como sala)
-        io.to(channel.roomId).emit("NEW_MESSAGE", {
-          channelId,
-          message,
-        });
+        // Emitir para quem está na sala (chat aberto) e para toda a empresa
+        // (sidebar com badge de não lidas, mesmo sem o canal aberto).
+        // Socket.IO dedupe automaticamente sockets presentes nas duas salas.
+        io.to(channel.roomId)
+          .to(`company:${channel.room.companyId}`)
+          .emit("NEW_MESSAGE", {
+            channelId,
+            roomId: channel.roomId,
+            message,
+          });
       }
     } catch (error) {
       console.error("Erro ao emitir evento WebSocket:", error);
@@ -209,6 +216,20 @@ export const updateReadState = async (req: AuthRequest, res: Response) => {
 
     await ChatService.updateReadState(input, userId);
 
+    // Zerar badge de não lidas em outras abas/dispositivos do mesmo usuário
+    try {
+      const wsServer = WebSocketServer.getInstance();
+      const channel = await ChatService.getChannel(channelId);
+      if (channel) {
+        wsServer
+          .getIO()
+          .to(`user:${userId}`)
+          .emit("CHANNEL_READ", { channelId, roomId: channel.roomId });
+      }
+    } catch (error) {
+      console.error("Erro ao emitir evento WebSocket:", error);
+    }
+
     return res.json({ message: "Estado de leitura atualizado com sucesso" });
   } catch (error: any) {
     console.error("Erro ao atualizar estado de leitura:", error);
@@ -292,6 +313,83 @@ export const getChannelByRoom = async (req: AuthRequest, res: Response) => {
     return res.json({ channel });
   } catch (error: any) {
     console.error("Erro ao buscar canal por sala:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Conta mensagens não lidas por canal, para a sidebar
+ * GET /chat/companies/:companyId/unread-counts
+ */
+export const getUnreadCounts = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { companyId } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const isMember = await ChatService.verifyCompanyMember(userId, companyId);
+    if (!isMember) {
+      return res.status(403).json({ error: "Usuário não é membro ativo da empresa" });
+    }
+
+    const counts = await ChatService.getUnreadCounts(userId, companyId);
+
+    return res.json({ counts });
+  } catch (error: any) {
+    console.error("Erro ao buscar contagem de não lidas:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Busca (com cache) metadados de preview (Open Graph) de uma URL
+ * POST /chat/link-preview
+ */
+export const getLinkPreview = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { url } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ error: "url é obrigatória" });
+    }
+
+    const preview = await LinkPreviewService.getOrFetchPreview(url);
+
+    return res.json({ preview });
+  } catch (error: any) {
+    console.error("Erro ao buscar preview de link:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Busca o bot padrão da Pingr
+ * GET /chat/bots/pingr
+ */
+export const getPingrBot = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const bot = await ChatService.getPingrBot();
+
+    return res.json({ bot });
+  } catch (error: any) {
+    console.error("Erro ao buscar bot da Pingr:", error);
+    if (error.message.includes("não encontrado")) {
+      return res.status(404).json({ error: error.message });
+    }
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

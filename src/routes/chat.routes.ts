@@ -8,6 +8,9 @@ import {
   getChannel,
   getChannelByRoom,
   pinMessage,
+  getPingrBot,
+  getUnreadCounts,
+  getLinkPreview,
 } from "../controllers/chat.controller";
 import { authenticate } from "../middleware/auth.middleware";
 
@@ -26,5 +29,14 @@ router.put("/channels/:channelId/read", authenticate, updateReadState);
 
 // Rotas de salas (para obter canal por roomId)
 router.get("/rooms/:roomId/channel", authenticate, getChannelByRoom);
+
+// Contagem de não lidas por canal (sidebar)
+router.get("/companies/:companyId/unread-counts", authenticate, getUnreadCounts);
+
+// Preview de link (Open Graph), com cache
+router.post("/link-preview", authenticate, getLinkPreview);
+
+// Rotas de bots
+router.get("/bots/pingr", authenticate, getPingrBot);
 
 export default router;

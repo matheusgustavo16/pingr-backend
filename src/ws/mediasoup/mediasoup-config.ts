@@ -23,6 +23,8 @@ export const mediasoupConfig = {
         mimeType: "audio/opus",
         clockRate: 48000,
         channels: 2,
+        // Payload type previsível para o SDP/FFmpeg da transcrição.
+        preferredPayloadType: 111,
       },
       {
         kind: "video",

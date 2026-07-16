@@ -7,21 +7,38 @@ datasource db {
 }
 
 model User {
-  id        String     @id @default(uuid())
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  name      String
-  email     String     @unique
-  password  String?
-  picture   String?
-  status    UserStatus @default(AVAILABLE)
+  id          String     @id @default(uuid())
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  lastSeenAt  DateTime?
+  name        String
+  email       String     @unique
+  password    String?
+  picture     String?
+  status      UserStatus @default(AVAILABLE)
+  locale      String     @default("pt-BR")
+  preferences Json       @default("{}")
 
-  twoFactor        TwoFactor[]
-  ownedCompanies   Company[]         @relation("CompanyOwner")
-  memberships      CompanyMember[]
-  chatMessages     ChatMessage[]
-  chatReadStates   ChatReadState[]
-  chatParticipants ChatParticipant[]
+  twoFactor             TwoFactor[]
+  ownedCompanies        Company[]           @relation("CompanyOwner")
+  memberships           CompanyMember[]
+  chatMessages          ChatMessage[]
+  chatReadStates        ChatReadState[]
+  chatParticipants      ChatParticipant[]
+  createdScheduleEvents ScheduleEvent[]     @relation("ScheduleEventCreator")
+  integrations          Integration[]
+  notifications         Notification[]
+  startedCallSessions   CallSession[]       @relation("CallSessionStarter")
+  transcriptSegments    TranscriptSegment[]
+  agentActionLogs       AgentActionLog[]
+  createdTasks          Task[]              @relation("TaskCreator")
+  assignedTasks         TaskAssignee[]      @relation("TaskAssignee")
+  watchedTasks          TaskWatcher[]       @relation("TaskWatcher")
+  taskComments          TaskComment[]       @relation("TaskCommentAuthor")
+  taskAttachments       TaskAttachment[]    @relation("TaskAttachmentUploader")
+  taskActivities        TaskActivity[]      @relation("TaskActivityActor")
+  createdFolders        Folder[]            @relation("FolderCreator")
+  uploadedDocuments     Document[]          @relation("DocumentUploader")
 
   @@map("users")
 }
@@ -51,13 +68,64 @@ model Company {
   cnpj      String?  @unique
   picture   String?
 
-  ownerId    String
-  owner      User            @relation("CompanyOwner", fields: [ownerId], references: [id])
-  members    CompanyMember[]
-  rooms      Room[]
-  categories RoomCategory[]
+  ownerId        String
+  owner          User            @relation("CompanyOwner", fields: [ownerId], references: [id])
+  members        CompanyMember[]
+  rooms          Room[]
+  categories     RoomCategory[]
+  scheduleEvents ScheduleEvent[]
+  workspaces     Workspace[]
+  chatBots       ChatBot[]
+  tasks          Task[]
+  decorations    OfficeDecoration[]
+  folders        Folder[]
+  documents      Document[]
 
   @@map("companies")
+}
+
+// Itens puramente decorativos do mapa (ex: planta) — posicionáveis pelo admin
+// no modo editor, mas sem nenhuma interação pro usuário comum (não é Room).
+model OfficeDecoration {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  type      String   @default("plant")
+  x         Float
+  y         Float
+  scale     Int      @default(1)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  @@map("office_decorations")
+}
+
+model Workspace {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  title     String
+  emoji     String
+  picture   String?
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  // GitHub integration
+  githubRepoId       Int?
+  githubRepoName     String?
+  githubRepoFullName String?
+  githubRepoUrl      String?
+  githubWebhookId    Int?
+
+  roomCategories RoomCategory[]
+  rooms          Room[]
+  tasks          Task[]
+  folders        Folder[]
+  documents      Document[]
+
+  @@map("workspaces")
 }
 
 model CompanyMember {
@@ -98,8 +166,10 @@ model RoomCategory {
   emoji     String
   title     String
 
-  companyId String
-  company   Company @relation(fields: [companyId], references: [id])
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id])
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
 
   rooms Room[]
 
@@ -112,12 +182,26 @@ model Room {
   updatedAt DateTime  @updatedAt
   type      RoomTypes @default(OFFICE)
   title     String
+  isOpen    Boolean   @default(false)
+  x         Float?
+  y         Float?
+  // Posição na lista de canais da sidebar, dentro da categoria — não tem
+  // relação com x/y (posição no mapa).
+  order     Int       @default(0)
 
-  companyId   String
-  company     Company       @relation(fields: [companyId], references: [id])
-  categoryId  String?
-  category    RoomCategory? @relation(fields: [categoryId], references: [id])
-  chatChannel ChatChannel?
+  companyId      String
+  company        Company         @relation(fields: [companyId], references: [id])
+  workspaceId    String?
+  workspace      Workspace?      @relation(fields: [workspaceId], references: [id])
+  categoryId     String?
+  category       RoomCategory?   @relation(fields: [categoryId], references: [id])
+  chatChannel    ChatChannel?
+  scheduleEvents ScheduleEvent[] @relation("ScheduleEventRoom")
+
+  eventRefId     String?        @unique
+  scheduledEvent ScheduleEvent? @relation("RoomScheduledEvent", fields: [eventRefId], references: [id])
+
+  callSessions CallSession[]
 
   @@map("rooms")
 }
@@ -129,6 +213,7 @@ enum RoomTypes {
   CHAT
   ADVISORY
   VOICE
+  DEV
 }
 
 enum UserStatus {
@@ -159,26 +244,42 @@ model ChatChannel {
   @@map("chat_channels")
 }
 
-model ChatMessage {
+model ChatBot {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  name      String
+  provider  String   @default("pingr")
+  picture   String?
 
-  content String
-  type    MessageType @default(TEXT)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
 
-  authorId  String
+  messages ChatMessage[]
+
+  @@map("chat_bots")
+}
+
+model ChatMessage {
+  id        String      @id @default(uuid())
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  isEdited  Boolean     @default(false)
+  isDeleted Boolean     @default(false)
+  isPinned  Boolean     @default(false)
+  type      MessageType @default(TEXT)
+  content   String
+  metadata  Json?       @default("{}")
+
+  authorId  String?
+  author    User?       @relation(fields: [authorId], references: [id])
+  botId     String?
+  bot       ChatBot?    @relation(fields: [botId], references: [id])
   channelId String
-
-  author  User        @relation(fields: [authorId], references: [id])
-  channel ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-
-  isEdited  Boolean @default(false)
-  isDeleted Boolean @default(false)
-  isPinned  Boolean @default(false)
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
   @@index([channelId, createdAt])
   @@index([channelId, isPinned])
+  @@index([botId])
   @@map("chat_messages")
 }
 
@@ -224,4 +325,431 @@ enum ChatRole {
   ADMIN
   MEMBER
   READ_ONLY
+}
+
+model LinkPreview {
+  id          String   @id @default(uuid())
+  url         String   @unique
+  title       String?
+  description String?
+  image       String?
+  siteName    String?
+  failed      Boolean  @default(false)
+  fetchedAt   DateTime @default(now())
+
+  @@map("link_previews")
+}
+
+enum EventVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+model ScheduleEvent {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  title String
+
+  startAt DateTime
+  endAt   DateTime
+
+  visibility EventVisibility @default(PUBLIC)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  roomId String?
+  room   Room?   @relation("ScheduleEventRoom", fields: [roomId], references: [id])
+
+  roomByEventRef Room? @relation("RoomScheduledEvent")
+
+  createdById String
+  createdBy   User   @relation("ScheduleEventCreator", fields: [createdById], references: [id])
+
+  provider   String? // ex: "google", "outlook", etc
+  externalId String? // ID do evento no calendário externo
+
+  @@index([companyId, startAt])
+  @@map("schedule_events")
+}
+
+model Integration {
+  id          String              @id @default(uuid())
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  provider    IntegrationProvider
+  name        String
+  description String?
+  status      IntegrationStatus   @default(ACTIVE)
+  connectedAt DateTime?
+  revokedAt   DateTime?
+
+  config      Json    @default("{}") // filtros, regras, preferências
+  credentials Json? // tokens, secrets (criptografar no app)
+  externalId  String? // ex: github org id, slack team id
+  externalUrl String? // link direto para a integração
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([provider, externalId, userId])
+  @@map("integrations")
+}
+
+enum IntegrationProvider {
+  GITHUB
+  VERCEL
+  GOOGLE
+  SLACK
+  NOTION
+  FIGMA
+  CUSTOM
+}
+
+enum IntegrationStatus {
+  ACTIVE
+  DISABLED
+  ERROR
+  REVOKED
+}
+
+model Notification {
+  id          String           @id @default(uuid())
+  createdAt   DateTime         @default(now())
+  type        NotificationType
+  title       String
+  description String
+  actionUrl   String?
+  read        Boolean          @default(false)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  MENTION
+  PR
+  DEPLOY
+  MEETING
+  TASK
+  MESSAGE
+}
+
+model CallSession {
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  startedById String
+  startedBy   User   @relation("CallSessionStarter", fields: [startedById], references: [id])
+
+  transcriptSegments TranscriptSegment[]
+  agentActionLogs    AgentActionLog[]
+
+  @@index([roomId, createdAt])
+  @@map("call_sessions")
+}
+
+model TranscriptSegment {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  callSessionId String
+  callSession   CallSession @relation(fields: [callSessionId], references: [id], onDelete: Cascade)
+
+  roomId String // desnormalizado para queries diretas por Room sem join
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  text       String
+  isFinal    Boolean @default(true) // Deepgram manda interim + final; só persistimos final
+  startMs    Int
+  endMs      Int
+  confidence Float?
+
+  @@index([callSessionId, startMs])
+  @@index([roomId, createdAt])
+  @@map("transcript_segments")
+}
+
+model AgentActionLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  callSessionId String?
+  callSession   CallSession? @relation(fields: [callSessionId], references: [id], onDelete: SetNull)
+
+  roomId String
+
+  triggeredByUserId String?
+  triggeredBy       User?   @relation(fields: [triggeredByUserId], references: [id])
+
+  trigger AgentTriggerType
+
+  input  String
+  output String
+
+  toolName   String? // null se só respondeu texto, sem tool
+  toolArgs   Json?
+  toolResult Json?
+
+  status       AgentActionStatus @default(SUCCESS)
+  errorMessage String?
+
+  @@index([roomId, createdAt])
+  @@index([callSessionId])
+  @@map("agent_action_logs")
+}
+
+enum AgentTriggerType {
+  VOICE_COMMAND
+  CHAT_MESSAGE
+  AUTONOMOUS
+}
+
+enum AgentActionStatus {
+  SUCCESS
+  ERROR
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskActivityType {
+  CREATED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  ASSIGNEE_ADDED
+  ASSIGNEE_REMOVED
+  DUE_DATE_CHANGED
+  MOVED
+  COMMENTED
+  ATTACHMENT_ADDED
+  CHECKLIST_ITEM_TOGGLED
+  DESCRIPTION_CHANGED
+  ARCHIVED
+  DELETED
+}
+
+model Task {
+  id               String       @id @default(uuid())
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  title            String
+  description      String?
+  status           TaskStatus   @default(TODO)
+  priority         TaskPriority @default(MEDIUM)
+  position         Float        @default(0)
+  startDate        DateTime?
+  dueDate          DateTime?
+  estimatedMinutes Int?
+  recurrenceRule   Json?
+  labels           String[]     @default([])
+  githubPR         String?
+  isArchived       Boolean      @default(false)
+
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  createdById String
+  createdBy   User       @relation("TaskCreator", fields: [createdById], references: [id])
+  parentId    String?
+  parent      Task?      @relation("TaskSubtasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subtasks    Task[]     @relation("TaskSubtasks")
+
+  assignees   TaskAssignee[]
+  watchers    TaskWatcher[]
+  checklists  TaskChecklist[]
+  comments    TaskComment[]
+  attachments TaskAttachment[]
+  activities  TaskActivity[]
+
+  @@index([companyId, status])
+  @@index([companyId, workspaceId])
+  @@index([parentId])
+  @@index([dueDate])
+  @@map("tasks")
+}
+
+model TaskAssignee {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation("TaskAssignee", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([userId])
+  @@map("task_assignees")
+}
+
+model TaskWatcher {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation("TaskWatcher", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@map("task_watchers")
+}
+
+model TaskChecklist {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  title     String
+  order     Int      @default(0)
+
+  taskId String
+  task   Task                @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  items  TaskChecklistItem[]
+
+  @@index([taskId])
+  @@map("task_checklists")
+}
+
+model TaskChecklistItem {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  title     String
+  isDone    Boolean  @default(false)
+  order     Int      @default(0)
+
+  checklistId String
+  checklist   TaskChecklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId])
+  @@map("task_checklist_items")
+}
+
+model TaskComment {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  content          String
+  isEdited         Boolean  @default(false)
+  isDeleted        Boolean  @default(false)
+  mentionedUserIds String[] @default([])
+
+  taskId   String
+  task     Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId String
+  author   User   @relation("TaskCommentAuthor", fields: [authorId], references: [id])
+
+  @@index([taskId, createdAt])
+  @@map("task_comments")
+}
+
+model TaskAttachment {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  fileName  String
+  fileUrl   String
+  publicId  String
+  fileType  String?
+  fileSize  Int?
+
+  taskId       String
+  task         Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User   @relation("TaskAttachmentUploader", fields: [uploadedById], references: [id])
+
+  @@index([taskId])
+  @@map("task_attachments")
+}
+
+model TaskActivity {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  taskId String
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  type      TaskActivityType
+  actorId   String?
+  actor     User?            @relation("TaskActivityActor", fields: [actorId], references: [id])
+  fromValue Json?
+  toValue   Json?
+
+  @@index([taskId, createdAt])
+  @@map("task_activities")
+}
+
+model Folder {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  title     String
+
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  parentId String?
+  parent   Folder?  @relation("FolderChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children Folder[] @relation("FolderChildren")
+
+  createdById String
+  createdBy   User   @relation("FolderCreator", fields: [createdById], references: [id])
+
+  documents Document[]
+
+  @@index([companyId, parentId])
+  @@index([companyId, workspaceId])
+  @@map("folders")
+}
+
+model Document {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  fileName  String
+  fileUrl   String
+  publicId  String
+  fileType  String?
+  fileSize  Int?
+
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  folderId String?
+  folder   Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  uploadedById String
+  uploadedBy   User   @relation("DocumentUploader", fields: [uploadedById], references: [id])
+
+  @@index([companyId, folderId])
+  @@index([companyId, workspaceId])
+  @@map("documents")
 }

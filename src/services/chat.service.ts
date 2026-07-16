@@ -1,6 +1,7 @@
 import { prisma } from "./prisma.service";
 import { MessageType, ChatRole, MemberStatus } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
+import { NotificationService } from "./notification.service";
 import {
   CreateMessageInput,
   EditMessageInput,
@@ -113,6 +114,38 @@ export class ChatService {
   }
 
   /**
+   * Cria notificações para os participantes do canal (exceto o autor, se houver)
+   */
+  private static async notifyOtherParticipants(
+    channel: ChatChannelInfo,
+    excludeUserId: string | null,
+    authorName: string,
+    preview: string
+  ) {
+    try {
+      const otherParticipants = await prisma.chatParticipant.findMany({
+        where: {
+          channelId: channel.id,
+          ...(excludeUserId ? { userId: { not: excludeUserId } } : {}),
+        },
+        select: { userId: true },
+      });
+
+      await NotificationService.createMany(
+        otherParticipants.map((p) => ({
+          userId: p.userId,
+          type: "MESSAGE" as const,
+          title: `Nova mensagem em ${channel.room.title}`,
+          description: `${authorName}: ${preview}`,
+          actionUrl: `/office/${channel.room.type.toLowerCase()}/${channel.room.id}`,
+        }))
+      );
+    } catch (error) {
+      console.error("Erro ao criar notificações de mensagem:", error);
+    }
+  }
+
+  /**
    * Obtém informações do canal
    */
   static async getChannel(channelId: string): Promise<ChatChannelInfo | null> {
@@ -195,6 +228,13 @@ export class ChatService {
             picture: true,
           },
         },
+        bot: {
+          select: {
+            id: true,
+            name: true,
+            picture: true,
+          },
+        },
       },
       orderBy: {
         createdAt: "desc",
@@ -219,7 +259,21 @@ export class ChatService {
         isEdited: msg.isEdited,
         isDeleted: msg.isDeleted,
         isPinned: msg.isPinned,
-        author: msg.author,
+        author: msg.author
+          ? {
+              id: msg.author.id,
+              name: msg.author.name,
+              email: msg.author.email,
+              picture: msg.author.picture,
+            }
+          : msg.bot
+          ? {
+              id: msg.bot.id,
+              name: msg.bot.name,
+              email: "", // Bot não tem email
+              picture: msg.bot.picture,
+            }
+          : null,
       })),
       nextCursor: hasMore
         ? messagesToReturn[messagesToReturn.length - 1].createdAt.toISOString()
@@ -229,18 +283,91 @@ export class ChatService {
   }
 
   /**
+   * Busca o bot padrão da Pingr (sem companyId)
+   */
+  static async getPingrBot() {
+    const bot = await prisma.chatBot.findFirst({
+      where: {
+        companyId: null,
+        provider: "pingr",
+        name: "Pingr Bot",
+      },
+    });
+
+    if (!bot) {
+      throw new Error("Bot padrão da Pingr não encontrado");
+    }
+
+    return bot;
+  }
+
+  /**
    * Envia uma mensagem
+   * @param userId - Pode ser vazio para mensagens de bot
    */
   static async sendMessage(
     input: CreateMessageInput,
-    userId: string
+    userId: string = ""
   ): Promise<MessageWithAuthor> {
-    const { content, type = MessageType.TEXT, channelId } = input;
+    const { content, type = MessageType.TEXT, channelId, botId } = input;
 
     // Verificar se o canal existe
     const channel = await this.getChannel(channelId);
     if (!channel) {
       throw new Error("Canal não encontrado");
+    }
+
+    // Se for mensagem de bot, não precisa verificar participante
+    if (botId) {
+      // Verificar se o bot existe
+      // Pode ser o bot da Pingr (sem companyId) ou um bot da empresa (com companyId)
+      const bot = await prisma.chatBot.findFirst({
+        where: {
+          id: botId,
+          OR: [
+            { companyId: null }, // Bot da Pingr
+            { companyId: channel.room.companyId }, // Bot da empresa
+          ],
+        },
+      });
+
+      if (!bot) {
+        throw new Error("Bot não encontrado");
+      }
+
+      // Criar mensagem de bot
+      const message = await prisma.chatMessage.create({
+        data: {
+          content: content.trim(),
+          type: type || MessageType.BOT,
+          botId,
+          channelId,
+        },
+        include: {
+          author: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              picture: true,
+            },
+          },
+        },
+      });
+
+      await this.notifyOtherParticipants(channel, null, bot.name, "Nova atualização");
+
+      return {
+        id: message.id,
+        content: message.content,
+        type: message.type,
+        createdAt: message.createdAt,
+        updatedAt: message.updatedAt,
+        isEdited: message.isEdited,
+        isDeleted: message.isDeleted,
+        isPinned: message.isPinned,
+        author: null, // Mensagens de bot não têm author
+      };
     }
 
     // Verificar se é membro ativo da empresa
@@ -300,6 +427,9 @@ export class ChatService {
       },
     });
 
+    const preview = content.trim().length > 80 ? `${content.trim().slice(0, 80)}...` : content.trim();
+    await this.notifyOtherParticipants(channel, userId, message.author?.name || "Alguém", preview);
+
     return {
       id: message.id,
       content: message.content,
@@ -309,7 +439,14 @@ export class ChatService {
       isEdited: message.isEdited,
       isDeleted: message.isDeleted,
       isPinned: message.isPinned,
-      author: message.author,
+      author: message.author
+        ? {
+            id: message.author.id,
+            name: message.author.name,
+            email: message.author.email,
+            picture: message.author.picture,
+          }
+        : null,
     };
   }
 
@@ -356,6 +493,11 @@ export class ChatService {
     }
 
     // Verificar permissão para editar
+    // Mensagens de bot não podem ser editadas
+    if (!message.authorId) {
+      throw new Error("Mensagens de bot não podem ser editadas");
+    }
+
     const participant = await this.verifyParticipant(
       userId,
       message.channelId
@@ -392,7 +534,14 @@ export class ChatService {
       isEdited: updated.isEdited,
       isDeleted: updated.isDeleted,
       isPinned: updated.isPinned,
-      author: updated.author,
+      author: updated.author
+        ? {
+            id: updated.author.id,
+            name: updated.author.name,
+            email: updated.author.email,
+            picture: updated.author.picture,
+          }
+        : null,
     };
   }
 
@@ -439,6 +588,11 @@ export class ChatService {
     }
 
     // Verificar permissão para deletar
+    // Mensagens de bot não podem ser deletadas
+    if (!message.authorId) {
+      throw new Error("Mensagens de bot não podem ser deletadas");
+    }
+
     const participant = await this.verifyParticipant(
       userId,
       message.channelId
@@ -502,6 +656,67 @@ export class ChatService {
         lastReadMessageId: lastReadMessageId || null,
       },
     });
+  }
+
+  /**
+   * Conta mensagens não lidas por canal, para todos os canais da empresa.
+   * Usado pelo badge de não lidas na sidebar. Mensagens do próprio usuário
+   * não contam como não lidas.
+   */
+  static async getUnreadCounts(
+    userId: string,
+    companyId: string
+  ): Promise<Record<string, number>> {
+    const channels = await prisma.chatChannel.findMany({
+      where: { room: { companyId } },
+      select: { id: true, roomId: true },
+    });
+    const channelIds = channels.map((c) => c.id);
+    if (channelIds.length === 0) return {};
+    const roomIdByChannel = new Map(channels.map((c) => [c.id, c.roomId]));
+
+    const readStates = await prisma.chatReadState.findMany({
+      where: { userId, channelId: { in: channelIds } },
+      select: { channelId: true, lastReadMessageId: true },
+    });
+
+    const lastReadMessageIds = readStates
+      .map((r) => r.lastReadMessageId)
+      .filter((id): id is string => !!id);
+
+    const lastReadMessages = lastReadMessageIds.length
+      ? await prisma.chatMessage.findMany({
+          where: { id: { in: lastReadMessageIds } },
+          select: { id: true, createdAt: true },
+        })
+      : [];
+    const createdAtById = new Map(
+      lastReadMessages.map((m) => [m.id, m.createdAt])
+    );
+    const readAtByChannel = new Map(
+      readStates.map((r) => [
+        r.channelId,
+        r.lastReadMessageId ? createdAtById.get(r.lastReadMessageId) ?? null : null,
+      ])
+    );
+
+    const counts: Record<string, number> = {};
+    await Promise.all(
+      channelIds.map(async (channelId) => {
+        const readAt = readAtByChannel.get(channelId);
+        const count = await prisma.chatMessage.count({
+          where: {
+            channelId,
+            isDeleted: false,
+            authorId: { not: userId },
+            ...(readAt ? { createdAt: { gt: readAt } } : {}),
+          },
+        });
+        if (count > 0) counts[roomIdByChannel.get(channelId)!] = count;
+      })
+    );
+
+    return counts;
   }
 
   /**
@@ -636,7 +851,14 @@ export class ChatService {
       isEdited: updated.isEdited,
       isDeleted: updated.isDeleted,
       isPinned: updated.isPinned,
-      author: updated.author,
+      author: updated.author
+        ? {
+            id: updated.author.id,
+            name: updated.author.name,
+            email: updated.author.email,
+            picture: updated.author.picture,
+          }
+        : null,
     };
   }
 }

@@ -4,6 +4,7 @@ export interface CreateMessageInput {
   content: string;
   type?: MessageType;
   channelId: string;
+  botId?: string; // Para mensagens de bot
 }
 
 export interface EditMessageInput {
@@ -46,7 +47,7 @@ export interface MessageWithAuthor {
     name: string;
     email: string;
     picture: string | null;
-  };
+  } | null;
 }
 
 export interface PaginatedMessages {

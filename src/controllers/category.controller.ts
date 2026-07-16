@@ -1,20 +1,19 @@
 import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
+import { resolveUserCompany } from "../services/company.service";
 
 export const createCategory = async (req: AuthRequest, res: Response) => {
   try {
-    const { title, emoji } = req.body;
+    const { title, emoji, workspaceId } = req.body;
     const userId = req.userId;
 
     if (!userId) {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Buscar a empresa do usuário (Dono)
-    const company = await prisma.company.findFirst({
-      where: { ownerId: userId },
-    });
+    // Buscar a empresa do usuário (Dono ou membro ativo)
+    const company = await resolveUserCompany(userId);
 
     if (!company) {
       return res
@@ -28,12 +27,27 @@ export const createCategory = async (req: AuthRequest, res: Response) => {
         .json({ error: "Título da categoria é obrigatório" });
     }
 
+    // Validar workspaceId se fornecido (deve pertencer à empresa)
+    let validWorkspaceId: string | null = null;
+    if (workspaceId && workspaceId !== "company") {
+      const workspace = await prisma.workspace.findFirst({
+        where: {
+          id: workspaceId,
+          companyId: company.id,
+        },
+      });
+      if (workspace) {
+        validWorkspaceId = workspaceId;
+      }
+    }
+
     // Criar a categoria
     const category = await prisma.roomCategory.create({
       data: {
         title: title.trim(),
         emoji: emoji || "📁",
         companyId: company.id,
+        workspaceId: validWorkspaceId,
       },
     });
 
@@ -42,6 +56,7 @@ export const createCategory = async (req: AuthRequest, res: Response) => {
         id: category.id,
         title: category.title,
         emoji: category.emoji,
+        workspaceId: category.workspaceId,
       },
     });
   } catch (error) {

@@ -4,6 +4,9 @@ import { prisma } from "../services/prisma.service";
 import { validateName } from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { ChatService } from "../services/chat.service";
+import { GitHubService } from "../services/github.service";
+import { IntegrationProvider, IntegrationStatus } from "@prisma/client";
+import { NotificationService } from "../services/notification.service";
 
 // O JWT_SECRET deve ser lido preferencialmente dentro das funções ou garantindo que o dotenv foi carregado
 const getSecret = () => process.env.JWT_SECRET || "";
@@ -157,10 +160,16 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
         ],
       },
       include: {
-        rooms: true,
+        rooms: {
+          include: { scheduledEvent: true },
+        },
+        decorations: true,
         categories: {
           include: {
-            rooms: true,
+            rooms: {
+              orderBy: { order: "asc" },
+              include: { scheduledEvent: true },
+            },
           },
         },
         members: {
@@ -169,9 +178,16 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
               select: {
                 id: true,
                 name: true,
+                email: true,
                 picture: true,
+                lastSeenAt: true,
               },
             },
+          },
+        },
+        workspaces: {
+          orderBy: {
+            createdAt: "asc",
           },
         },
       },
@@ -187,13 +203,344 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
         title: company.title,
         cnpj: company.cnpj,
         picture: company.picture,
+        ownerId: company.ownerId,
         createdAt: company.createdAt,
         rooms: company.rooms,
+        decorations: company.decorations,
         categories: company.categories,
+        workspaces: company.workspaces,
+        members: company.members
+          .filter((m) => m.status === "ACTIVE")
+          .map((m) => ({
+            id: m.id,
+            userId: m.userId,
+            role: m.role,
+            status: m.status,
+            user: {
+              id: m.user.id,
+              name: m.user.name,
+              email: m.user.email,
+              picture: m.user.picture,
+              lastSeenAt: m.user.lastSeenAt,
+            },
+          })),
       },
     });
   } catch (error) {
     console.error("Erro ao buscar empresa:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const createWorkspace = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { 
+      title, 
+      emoji, 
+      githubRepoId, 
+      githubRepoName, 
+      githubRepoFullName, 
+      githubRepoUrl 
+    } = req.body as { 
+      title?: string; 
+      emoji?: string;
+      githubRepoId?: number;
+      githubRepoName?: string;
+      githubRepoFullName?: string;
+      githubRepoUrl?: string;
+    };
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: "Título do projeto é obrigatório" });
+    }
+    if (!emoji || !emoji.trim()) {
+      return res.status(400).json({ error: "Emoji do projeto é obrigatório" });
+    }
+
+    // Buscar empresa onde o usuário é membro ATIVO ou dono
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [
+          { ownerId: userId },
+          {
+            members: {
+              some: {
+                userId,
+                status: "ACTIVE",
+              },
+            },
+          },
+        ],
+      },
+      select: { id: true, title: true },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Buscar integração GitHub do usuário se houver repositório
+    let githubAccessToken: string | null = null;
+    if (githubRepoFullName) {
+      const integration = await prisma.integration.findFirst({
+        where: {
+          userId,
+          provider: IntegrationProvider.GITHUB,
+          status: IntegrationStatus.ACTIVE,
+        },
+      });
+
+      if (integration) {
+        const credentials = integration.credentials as any;
+        githubAccessToken = credentials?.accessToken || null;
+      }
+    }
+
+    // Criar workspace, categoria e canal em uma transação
+    const result = await prisma.$transaction(async (tx) => {
+      // Criar workspace
+      const workspace = await tx.workspace.create({
+        data: {
+          title: title.trim(),
+          emoji: emoji.trim(),
+          companyId: company.id,
+          githubRepoId: githubRepoId || null,
+          githubRepoName: githubRepoName || null,
+          githubRepoFullName: githubRepoFullName || null,
+          githubRepoUrl: githubRepoUrl || null,
+        },
+      });
+
+      // Criar categoria "Notificações" automaticamente
+      const category = await tx.roomCategory.create({
+        data: {
+          title: "Notificações",
+          emoji: "🔔",
+          companyId: company.id,
+          workspaceId: workspace.id,
+        },
+      });
+
+      // Criar canal de DEV "Atualizações" (usando tipo CHAT por enquanto)
+      const room = await tx.room.create({
+        data: {
+          title: "Atualizações",
+          companyId: company.id,
+          type: "CHAT",
+          categoryId: category.id,
+          workspaceId: workspace.id,
+        },
+      });
+
+      // Criar canal de chat para a sala
+      const channel = await ChatService.createChannelForRoom(room.id, tx);
+
+      // Criar webhook no GitHub se houver repositório e token
+      let webhookId: number | null = null;
+      if (githubRepoFullName && githubAccessToken) {
+        try {
+          const backendUrl = process.env.BACKEND_URL || process.env.FRONTEND_URL || "http://localhost:3001";
+          const webhookUrl = `${backendUrl}/webhooks/github`;
+          const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+
+          const webhook = await GitHubService.createRepositoryWebhook(
+            githubAccessToken,
+            githubRepoFullName.split("/")[0],
+            githubRepoFullName,
+            webhookUrl,
+            webhookSecret
+          );
+
+          webhookId = webhook.id;
+
+          // Atualizar workspace com webhookId
+          await tx.workspace.update({
+            where: { id: workspace.id },
+            data: { githubWebhookId: webhookId },
+          });
+        } catch (error: any) {
+          console.error("Erro ao criar webhook do GitHub:", error);
+          // Não falhar a criação do workspace se o webhook falhar
+        }
+      }
+
+      return { workspace: { ...workspace, githubWebhookId: webhookId }, category, room, channel };
+    });
+
+    return res.status(201).json({ 
+      workspace: result.workspace,
+      category: result.category,
+      room: result.room,
+    });
+  } catch (error) {
+    console.error("Erro ao criar workspace:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const updateWorkspace = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { workspaceId } = req.params;
+    const { title, emoji } = req.body as { title?: string; emoji?: string };
+
+    if (!workspaceId) {
+      return res.status(400).json({ error: "ID da workspace é obrigatório" });
+    }
+
+    // Buscar empresa onde o usuário é membro ATIVO ou dono
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [
+          { ownerId: userId },
+          {
+            members: {
+              some: {
+                userId,
+                status: "ACTIVE",
+              },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Verificar se a workspace pertence à empresa
+    const workspace = await prisma.workspace.findFirst({
+      where: {
+        id: workspaceId,
+        companyId: company.id,
+      },
+    });
+
+    if (!workspace) {
+      return res.status(404).json({ error: "Workspace não encontrada" });
+    }
+
+    // Atualizar workspace
+    const updated = await prisma.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        ...(title && { title: title.trim() }),
+        ...(emoji && { emoji: emoji.trim() }),
+      },
+    });
+
+    return res.json({ workspace: updated });
+  } catch (error) {
+    console.error("Erro ao atualizar workspace:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const deleteWorkspace = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { workspaceId } = req.params;
+
+    if (!workspaceId) {
+      return res.status(400).json({ error: "ID da workspace é obrigatório" });
+    }
+
+    // Buscar empresa onde o usuário é membro ATIVO ou dono
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [
+          { ownerId: userId },
+          {
+            members: {
+              some: {
+                userId,
+                status: "ACTIVE",
+              },
+            },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Verificar se a workspace pertence à empresa e buscar dados para deletar webhook
+    const workspace = await prisma.workspace.findFirst({
+      where: {
+        id: workspaceId,
+        companyId: company.id,
+      },
+      include: {
+        rooms: {
+          include: {
+            chatChannel: true,
+          },
+        },
+      },
+    });
+
+    if (!workspace) {
+      return res.status(404).json({ error: "Workspace não encontrada" });
+    }
+
+    // Deletar webhook do GitHub se existir
+    if (workspace.githubWebhookId && workspace.githubRepoFullName) {
+      try {
+        // Buscar integração GitHub do usuário
+        const integration = await prisma.integration.findFirst({
+          where: {
+            userId,
+            provider: IntegrationProvider.GITHUB,
+            status: IntegrationStatus.ACTIVE,
+          },
+        });
+
+        if (integration) {
+          const credentials = integration.credentials as any;
+          const accessToken = credentials?.accessToken;
+
+          if (accessToken) {
+            await GitHubService.deleteRepositoryWebhook(
+              accessToken,
+              workspace.githubRepoFullName!.split("/")[0],
+              workspace.githubRepoFullName!,
+              workspace.githubWebhookId
+            );
+          }
+        }
+      } catch (error: any) {
+        console.error("Erro ao deletar webhook do GitHub:", error);
+        // Continuar mesmo se falhar
+      }
+    }
+
+    // Deletar workspace e todo conteúdo relacionado em uma transação
+    // O Prisma vai deletar em cascata: rooms -> chatChannels -> messages, etc.
+    await prisma.workspace.delete({
+      where: { id: workspaceId },
+    });
+
+    return res.json({ message: "Workspace deletada com sucesso" });
+  } catch (error) {
+    console.error("Erro ao deletar workspace:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };
@@ -303,6 +650,27 @@ export const joinCompany = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // Notificar owner/admins da empresa sobre a solicitação
+    try {
+      const requester = await prisma.user.findUnique({ where: { id: userId } });
+      const approvers = await prisma.companyMember.findMany({
+        where: { companyId, role: { in: ["OWNER", "ADMIN"] } },
+        select: { userId: true },
+      });
+
+      await NotificationService.createMany(
+        approvers.map((a) => ({
+          userId: a.userId,
+          type: "TASK" as const,
+          title: "Nova solicitação de entrada",
+          description: `${requester?.name || "Alguém"} quer entrar em ${company.title}`,
+          actionUrl: "/office/members",
+        }))
+      );
+    } catch (error) {
+      console.error("Erro ao notificar solicitação de entrada:", error);
+    }
+
     return res.status(201).json({
       message: "Solicitação enviada! Aguarde a aprovação de um administrador.",
       membership,
@@ -388,6 +756,10 @@ export const updateMemberStatus = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: "Acesso negado" });
     }
 
+    const previousMember = await prisma.companyMember.findUnique({
+      where: { id: memberId },
+    });
+
     const updatedMember = await prisma.companyMember.update({
       where: { id: memberId },
       data: {
@@ -396,12 +768,236 @@ export const updateMemberStatus = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // Notificar o membro se foi aprovado agora (PENDING -> ACTIVE)
+    if (previousMember?.status === "PENDING" && updatedMember.status === "ACTIVE") {
+      try {
+        const company = await prisma.company.findUnique({ where: { id: companyId } });
+        await NotificationService.create({
+          userId: updatedMember.userId,
+          type: "TASK",
+          title: "Solicitação aprovada",
+          description: `Você agora faz parte de ${company?.title || "empresa"}`,
+          actionUrl: "/office",
+        });
+      } catch (error) {
+        console.error("Erro ao notificar aprovação de membro:", error);
+      }
+    }
+
     return res.json({
       message: "Membro atualizado com sucesso",
       member: updatedMember,
     });
   } catch (error) {
     console.error("Erro ao atualizar membro:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const updateCompany = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    // Buscar empresa do usuário
+    const company = await prisma.company.findFirst({
+      where: { ownerId: req.userId },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Verificar se o usuário é o dono
+    if (company.ownerId !== req.userId) {
+      return res.status(403).json({ error: "Apenas o dono pode atualizar a empresa" });
+    }
+
+    const { title, cnpj } = req.body;
+
+    // Preparar dados para atualização
+    const updateData: { title?: string; cnpj?: string | null } = {};
+
+    if (title !== undefined) {
+      const nameValidation = validateName(title);
+      if (!nameValidation.valid) {
+        return res.status(400).json({ error: nameValidation.message });
+      }
+      updateData.title = title.trim();
+    }
+
+    if (cnpj !== undefined) {
+      if (cnpj === null || cnpj === "") {
+        updateData.cnpj = null;
+      } else {
+        // Normalizar CNPJ: remover formatação
+        const normalizedCnpj = cnpj.replace(/\D/g, "");
+
+        // Validar se CNPJ tem 14 dígitos
+        if (normalizedCnpj.length !== 14) {
+          return res.status(400).json({ error: "CNPJ deve conter 14 dígitos" });
+        }
+
+        // Verificar se CNPJ já existe em outra empresa
+        const cnpjExists = await prisma.company.findFirst({
+          where: {
+            cnpj: normalizedCnpj,
+            id: { not: company.id },
+          },
+        });
+
+        if (cnpjExists) {
+          return res.status(400).json({ error: "CNPJ já está em uso" });
+        }
+
+        updateData.cnpj = normalizedCnpj;
+      }
+    }
+
+    const updatedCompany = await prisma.company.update({
+      where: { id: company.id },
+      data: updateData,
+      select: {
+        id: true,
+        title: true,
+        cnpj: true,
+        picture: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return res.json({
+      company: updatedCompany,
+    });
+  } catch (error) {
+    console.error("Erro ao atualizar empresa:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const leaveCompany = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    // Buscar empresa do usuário
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [
+          { ownerId: userId },
+          {
+            members: {
+              some: {
+                userId,
+                status: "ACTIVE",
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Verificar se o usuário é o dono
+    if (company.ownerId === userId) {
+      return res.status(400).json({
+        error: "O dono da empresa não pode sair. Transfira a propriedade primeiro ou delete a empresa.",
+      });
+    }
+
+    // Remover membro da empresa
+    await prisma.companyMember.deleteMany({
+      where: {
+        userId,
+        companyId: company.id,
+      },
+    });
+
+    return res.json({
+      message: "Você saiu da empresa com sucesso",
+    });
+  } catch (error) {
+    console.error("Erro ao sair da empresa:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+export const uploadCompanyLogo = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "Nenhum arquivo enviado" });
+    }
+
+    // Buscar empresa do usuário
+    const company = await prisma.company.findFirst({
+      where: { ownerId: req.userId },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    // Verificar se o usuário é o dono
+    if (company.ownerId !== req.userId) {
+      return res.status(403).json({ error: "Apenas o dono pode atualizar o logo" });
+    }
+
+    // Importar serviço Cloudinary
+    const { uploadImage, extractPublicIdFromUrl, deleteImage } = await import(
+      "../services/cloudinary.service"
+    );
+
+    // Fazer upload da nova imagem
+    const uploadResult = await uploadImage(
+      req.file.buffer,
+      "company-logos",
+      company.id
+    );
+
+    // Atualizar empresa com nova URL da imagem
+    const updatedCompany = await prisma.company.update({
+      where: { id: company.id },
+      data: { picture: uploadResult.url },
+      select: {
+        id: true,
+        title: true,
+        cnpj: true,
+        picture: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    // Deletar imagem antiga do Cloudinary se existir
+    if (company.picture) {
+      const oldPublicId = extractPublicIdFromUrl(company.picture);
+      if (oldPublicId) {
+        try {
+          await deleteImage(oldPublicId);
+        } catch (error) {
+          console.error("Erro ao deletar imagem antiga:", error);
+          // Não falhar a requisição se não conseguir deletar
+        }
+      }
+    }
+
+    return res.json({
+      company: updatedCompany,
+    });
+  } catch (error) {
+    console.error("Erro ao fazer upload do logo:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

@@ -5,10 +5,14 @@ export interface UserPresence {
   name: string;
   avatar?: string | null;
   status: "ACTIVE" | "IDLE" | "AWAY";
+  userStatus?: string; // status do perfil (AVAILABLE, IN_MEETING, etc)
   lastSeenAt: Date;
   workspaceId?: string;
+  companyIds: string[];
   currentRoomId?: string;
   socketId: string;
+  isMuted?: boolean;
+  isDeafened?: boolean;
 }
 
 class PresenceService {
@@ -22,12 +26,18 @@ class PresenceService {
     const existing = this.presenceMap.get(userId) || {
       userId,
       name: "",
-      status: "ACTIVE",
+      status: "ACTIVE" as const,
       lastSeenAt: new Date(),
       socketId: "",
+      companyIds: [] as string[],
     };
 
-    const updated = { ...existing, ...data, lastSeenAt: new Date() };
+    const updated: UserPresence = {
+      ...existing,
+      ...data,
+      companyIds: data.companyIds ?? existing.companyIds ?? [],
+      lastSeenAt: new Date(),
+    };
     this.presenceMap.set(userId, updated);
     return updated;
   }
@@ -50,6 +60,23 @@ class PresenceService {
 
   public getWorkspacePresence(workspaceId: string): UserPresence[] {
     return this.getAllPresence().filter((p) => p.workspaceId === workspaceId);
+  }
+
+  public getCompanyPresence(companyId: string): UserPresence[] {
+    return this.getAllPresence().filter((p) =>
+      (p.companyIds || []).includes(companyId)
+    );
+  }
+
+  public emitToCompanies(
+    io: SocketIOServer,
+    companyIds: string[] | undefined,
+    event: string,
+    payload: unknown
+  ) {
+    for (const companyId of companyIds || []) {
+      io.to(`company:${companyId}`).emit(event, payload);
+    }
   }
 }
 

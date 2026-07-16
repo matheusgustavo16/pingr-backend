@@ -39,7 +39,7 @@ export class WebSocketServer {
 
   private setupEvents() {
     this.io.on("connection", (socket: Socket) => {
-      handleConnection(this.io, socket);
+      void handleConnection(this.io, socket);
     });
   }
 
