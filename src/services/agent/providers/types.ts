@@ -1,4 +1,4 @@
-import type { AgentContext } from "../tools/types";
+import type { AgentContext, ToolDef } from "../tools/types";
 
 export interface AgentProviderResult {
   output: string;
@@ -7,7 +7,17 @@ export interface AgentProviderResult {
   toolResult: unknown;
 }
 
+export interface AgentProviderRunOptions {
+  model?: string;
+}
+
 export interface AgentProvider {
-  name: "anthropic" | "openai";
-  run: (ctx: AgentContext, message: string) => Promise<AgentProviderResult>;
+  name: "anthropic" | "openai" | "deepseek";
+  run: (
+    ctx: AgentContext,
+    message: string,
+    tools: ToolDef[],
+    system: string,
+    opts?: AgentProviderRunOptions
+  ) => Promise<AgentProviderResult>;
 }

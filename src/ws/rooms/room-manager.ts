@@ -38,7 +38,8 @@ export const toOfficePresencePayload = (p: {
 export const joinRoom = async (
   io: SocketIOServer,
   socket: AuthenticatedSocket,
-  roomId: string
+  roomId: string,
+  expectedToken: number
 ) => {
   if (!socket.user) return;
 
@@ -76,6 +77,10 @@ export const joinRoom = async (
       return;
     }
   }
+
+  // Um LEAVE_ROOM (ou outro JOIN_ROOM) chegou enquanto as queries acima
+  // rodavam — esse join está obsoleto, não aplicar presença nenhuma.
+  if (socket.roomJoinToken !== expectedToken) return;
 
   // Sair da sala anterior se houver
   const presence = presenceService.getPresence(socket.user.id);

@@ -13,6 +13,9 @@ export interface AuthenticatedSocket extends Socket {
     status?: string;
     roles: string[];
   };
+  /** Incrementado a cada JOIN_ROOM/LEAVE_ROOM — cancela joins assíncronos
+   *  que resolvem depois de um LEAVE_ROOM mais recente (ver room-manager.ts). */
+  roomJoinToken?: number;
 }
 
 export const setupAuthMiddleware = async (

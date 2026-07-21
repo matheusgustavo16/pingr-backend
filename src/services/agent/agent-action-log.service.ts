@@ -2,6 +2,7 @@ import { prisma } from "../prisma.service";
 import { AgentActionStatus, AgentTriggerType, Prisma } from "@prisma/client";
 
 interface LogParams {
+  agentId: string | null;
   roomId: string;
   callSessionId: string | null;
   triggeredByUserId: string | null;
@@ -18,6 +19,7 @@ interface LogParams {
 async function log(params: LogParams) {
   return prisma.agentActionLog.create({
     data: {
+      agentId: params.agentId,
       roomId: params.roomId,
       callSessionId: params.callSessionId,
       triggeredByUserId: params.triggeredByUserId,

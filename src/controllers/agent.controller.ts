@@ -9,17 +9,18 @@ import { AgentTriggerType } from "@prisma/client";
 import { WebSocketServer } from "../ws/socket-server";
 
 /**
- * Consulta o agente PINGR (chat ou comando de voz) e publica a resposta
- * como ChatMessage do bot PINGR no canal da sala.
+ * Consulta o agente Pinguelo (chat ou comando de voz) e publica a resposta
+ * como ChatMessage do bot Pinguelo no canal da sala.
  * POST /agent/query
  */
 export const queryAgent = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
-    const { roomId, message, trigger } = req.body as {
+    const { roomId, message, trigger, agentId } = req.body as {
       roomId?: string;
       message?: string;
       trigger?: AgentTriggerType;
+      agentId?: string;
     };
 
     if (!userId) {
@@ -53,19 +54,20 @@ export const queryAgent = async (req: AuthRequest, res: Response) => {
     const { output, logId, messageId } = await runAgentQueryAndRespond({
       io,
       ctx: { roomId, callSessionId, userId, companyId: room.companyId },
+      agentId,
       message: message.trim(),
       trigger: resolvedTrigger,
     });
 
     return res.status(200).json({ output, logId, messageId });
   } catch (error) {
-    console.error("Erro ao consultar agente PINGR:", error);
+    console.error("Erro ao consultar agente Pinguelo:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };
 
 /**
- * Lista o histórico de ações do agente PINGR numa sala
+ * Lista o histórico de ações do agente Pinguelo numa sala
  * GET /rooms/:roomId/agent-actions
  */
 export const listAgentActions = async (req: AuthRequest, res: Response) => {

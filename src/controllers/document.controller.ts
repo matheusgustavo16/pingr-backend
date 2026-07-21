@@ -147,7 +147,13 @@ export const deleteDocument = async (req: AuthRequest, res: Response) => {
       console.error("Erro ao deletar documento do Cloudinary:", error);
     }
 
-    await prisma.document.delete({ where: { id: document.id } });
+    // Se veio de anexo de tarefa, remove o TaskAttachment — o Document some
+    // em cascade. Caso contrário, apaga só o Document.
+    if (document.taskAttachmentId) {
+      await prisma.taskAttachment.delete({ where: { id: document.taskAttachmentId } });
+    } else {
+      await prisma.document.delete({ where: { id: document.id } });
+    }
 
     return res.json({ message: "Documento removido com sucesso" });
   } catch (error) {

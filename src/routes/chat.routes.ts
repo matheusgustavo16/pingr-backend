@@ -8,16 +8,24 @@ import {
   getChannel,
   getChannelByRoom,
   pinMessage,
-  getPingrBot,
+  getSystemAgentBot,
   getUnreadCounts,
   getLinkPreview,
+  uploadChatAttachment,
 } from "../controllers/chat.controller";
 import { authenticate } from "../middleware/auth.middleware";
+import { uploadAny } from "../middleware/upload.middleware";
 
 const router = Router();
 
 // Rotas de mensagens
 router.post("/messages", authenticate, sendMessage);
+router.post(
+  "/channels/:channelId/attachments",
+  authenticate,
+  uploadAny.single("file"),
+  uploadChatAttachment
+);
 router.put("/messages/:messageId", authenticate, editMessage);
 router.delete("/messages/:messageId", authenticate, deleteMessage);
 router.patch("/messages/:messageId/pin", authenticate, pinMessage);
@@ -37,6 +45,6 @@ router.get("/companies/:companyId/unread-counts", authenticate, getUnreadCounts)
 router.post("/link-preview", authenticate, getLinkPreview);
 
 // Rotas de bots
-router.get("/bots/pingr", authenticate, getPingrBot);
+router.get("/bots/pingr", authenticate, getSystemAgentBot);
 
 export default router;

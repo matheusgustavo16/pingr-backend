@@ -13,8 +13,12 @@ export class WebSocketServer {
         origin: "*", // Configure conforme necessário para produção
         methods: ["GET", "POST"],
       },
-      pingInterval: 10000,
-      pingTimeout: 5000,
+      // pingTimeout curto (era 5s) derrubava a conexão à toa quando o
+      // event loop atrasa por contenção de CPU (VPS de 1 vCPU rodando
+      // mediasoup + ffmpeg junto) — não é o cliente que caiu, é o servidor
+      // que não respondeu o heartbeat a tempo.
+      pingInterval: 20000,
+      pingTimeout: 20000,
     });
 
     this.setupMiddlewares();

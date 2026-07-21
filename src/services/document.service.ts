@@ -24,6 +24,35 @@ export async function requireDocumentInCompany(documentId: string, companyId: st
   return document;
 }
 
+/** Pasta da empresa onde caem os anexos espelhados a partir de tarefas. */
+export const TASK_ATTACHMENTS_FOLDER_TITLE = "Anexos de tarefas";
+
+/**
+ * Garante a pasta raiz "Anexos de tarefas" na empresa (workspace null).
+ * Reutiliza se já existir — um único lugar na UI de Documentos.
+ */
+export async function ensureTaskAttachmentsFolder(companyId: string, createdById: string) {
+  const existing = await prisma.folder.findFirst({
+    where: {
+      companyId,
+      title: TASK_ATTACHMENTS_FOLDER_TITLE,
+      parentId: null,
+      workspaceId: null,
+    },
+  });
+  if (existing) return existing;
+
+  return prisma.folder.create({
+    data: {
+      title: TASK_ATTACHMENTS_FOLDER_TITLE,
+      companyId,
+      parentId: null,
+      workspaceId: null,
+      createdById,
+    },
+  });
+}
+
 /**
  * Sobe a cadeia de pais raiz->atual pra montar o breadcrumb. Guard de profundidade
  * é só defesa contra ciclo acidental — o app nunca deveria produzir um.

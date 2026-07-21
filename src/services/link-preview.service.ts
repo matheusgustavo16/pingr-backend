@@ -11,8 +11,12 @@ export interface LinkPreviewData {
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
 const FAILED_RETRY_MS = 60 * 60 * 1000; // 1 hora antes de tentar de novo um link que falhou
-const FETCH_TIMEOUT_MS = 5000;
+const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 512 * 1024; // 512KB — meta tags sempre ficam no <head>
+
+/** UA de navegador: muitos sites (YouTube incluso) omitem OG tags para bots. */
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
 
 // Bloqueia SSRF para redes internas/loopback/link-local
 function isDisallowedIp(ip: string): boolean {
@@ -76,7 +80,63 @@ function resolveUrl(maybeRelative: string, baseUrl: string): string {
   }
 }
 
-async function fetchMetadata(url: string): Promise<LinkPreviewData | null> {
+function extractYoutubeVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") {
+      const id = parsed.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      if (parsed.pathname === "/watch") return parsed.searchParams.get("v");
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if ((parts[0] === "shorts" || parts[0] === "embed" || parts[0] === "live") && parts[1]) {
+        return parts[1];
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fetchYoutubeOembed(url: string): Promise<LinkPreviewData | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const response = await fetch(oembedUrl, {
+      signal: controller.signal,
+      headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      title?: string;
+      author_name?: string;
+      thumbnail_url?: string;
+      provider_name?: string;
+    };
+    if (!data.title && !data.thumbnail_url) return null;
+    return {
+      url,
+      title: data.title || null,
+      description: data.author_name || null,
+      image: data.thumbnail_url || null,
+      siteName: data.provider_name || "YouTube",
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function youtubeThumbnailFallback(videoId: string): string {
+  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+}
+
+async function scrapeOpenGraph(url: string): Promise<LinkPreviewData | null> {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return null;
@@ -91,8 +151,9 @@ async function fetchMetadata(url: string): Promise<LinkPreviewData | null> {
       signal: controller.signal,
       redirect: "follow",
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; PingrLinkPreview/1.0; +https://pingr.app)",
+        "User-Agent": BROWSER_UA,
         Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
       },
     });
 
@@ -112,23 +173,31 @@ async function fetchMetadata(url: string): Promise<LinkPreviewData | null> {
         if (done) break;
         html += decoder.decode(value, { stream: true });
         received += value.byteLength;
+        // Head completo basta; evita baixar o resto da página
+        if (html.includes("</head>") || html.includes("</HEAD>")) break;
       }
       await reader.cancel().catch(() => {});
     }
 
     const meta = extractMetaTags(html);
     const title = meta["og:title"] || meta["twitter:title"] || extractTitle(html);
-    const description = meta["og:description"] || meta["twitter:description"] || meta["description"] || null;
+    const description =
+      meta["og:description"] || meta["twitter:description"] || meta["description"] || null;
     const rawImage = meta["og:image"] || meta["twitter:image"] || null;
     const siteName = meta["og:site_name"] || parsed.hostname;
 
-    if (!title && !description && !rawImage) {
+    // Título genérico do YouTube sem OG = página de consentimento/bloqueio
+    const cleanedTitle = title?.replace(/\s*-\s*YouTube\s*$/i, "").trim() || null;
+    if (!cleanedTitle && !description && !rawImage) {
+      return null;
+    }
+    if (cleanedTitle === "" && !description && !rawImage) {
       return null;
     }
 
     return {
       url,
-      title: title || null,
+      title: cleanedTitle || title || null,
       description: description || null,
       image: rawImage ? resolveUrl(rawImage, url) : null,
       siteName: siteName || null,
@@ -138,6 +207,46 @@ async function fetchMetadata(url: string): Promise<LinkPreviewData | null> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchMetadata(url: string): Promise<LinkPreviewData | null> {
+  const videoId = extractYoutubeVideoId(url);
+
+  // YouTube: oEmbed é mais confiável que scrape (consent wall / HTML enorme)
+  if (videoId) {
+    const oembed = await fetchYoutubeOembed(url);
+    if (oembed) {
+      if (!oembed.image) {
+        oembed.image = youtubeThumbnailFallback(videoId);
+      }
+      return oembed;
+    }
+  }
+
+  const scraped = await scrapeOpenGraph(url);
+  if (scraped) {
+    if (videoId && !scraped.image) {
+      scraped.image = youtubeThumbnailFallback(videoId);
+    }
+    if (videoId && (!scraped.siteName || scraped.siteName.includes("youtube"))) {
+      scraped.siteName = "YouTube";
+    }
+    return scraped;
+  }
+
+  // Fallback mínimo pra YouTube mesmo quando o vídeo está indisponível no oEmbed:
+  // ainda assim o usuário vê um card reconhecível em vez de só o texto cru.
+  if (videoId) {
+    return {
+      url,
+      title: "Vídeo do YouTube",
+      description: null,
+      image: youtubeThumbnailFallback(videoId),
+      siteName: "YouTube",
+    };
+  }
+
+  return null;
 }
 
 export class LinkPreviewService {
@@ -159,14 +268,19 @@ export class LinkPreviewService {
         (cached.failed ? FAILED_RETRY_MS : CACHE_TTL_MS);
 
     if (cached && isFresh) {
-      if (cached.failed) return null;
-      return {
-        url: cached.url,
-        title: cached.title,
-        description: cached.description,
-        image: cached.image,
-        siteName: cached.siteName,
-      };
+      if (cached.failed) {
+        // Cache de falha antigo: YouTube agora tem oEmbed + fallback, então
+        // re-tenta em vez de esconder o card por até 1h.
+        if (!extractYoutubeVideoId(normalizedUrl)) return null;
+      } else {
+        return {
+          url: cached.url,
+          title: cached.title,
+          description: cached.description,
+          image: cached.image,
+          siteName: cached.siteName,
+        };
+      }
     }
 
     const fetched = await fetchMetadata(normalizedUrl);

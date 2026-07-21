@@ -5,11 +5,13 @@ import { AuthRequest } from "../middleware/auth.middleware";
 import { resolveUserCompany } from "../services/company.service";
 import {
   assertAssigneeInCompany,
+  createTask as createTaskService,
   emitTaskEvent,
   logActivity,
   notifyTaskEvent,
   requireTaskInCompany,
   TaskServiceError,
+  updateTask as updateTaskService,
 } from "../services/task.service";
 import {
   bulkActionSchema,
@@ -26,9 +28,17 @@ function handleTaskError(res: Response, error: unknown, context: string) {
   return res.status(500).json({ error: "Erro interno do servidor" });
 }
 
+const USER_SELECT = { id: true, name: true, email: true, picture: true } as const;
+
 const TASK_DETAIL_INCLUDE = {
-  assignees: { include: { user: { select: { id: true, name: true, email: true, picture: true } } } },
-  subtasks: true,
+  createdBy: { select: USER_SELECT },
+  assignees: { include: { user: { select: USER_SELECT } } },
+  watchers: { include: { user: { select: USER_SELECT } } },
+  subtasks: {
+    include: {
+      assignees: { include: { user: { select: USER_SELECT } } },
+    },
+  },
   checklists: {
     orderBy: { order: "asc" as const },
     include: { items: { orderBy: { order: "asc" as const } } },
@@ -36,13 +46,13 @@ const TASK_DETAIL_INCLUDE = {
   comments: {
     where: { isDeleted: false },
     orderBy: { createdAt: "asc" as const },
-    include: { author: { select: { id: true, name: true, email: true, picture: true } } },
+    include: { author: { select: USER_SELECT } },
   },
   attachments: { orderBy: { createdAt: "desc" as const } },
   activities: {
     orderBy: { createdAt: "desc" as const },
     take: 20,
-    include: { actor: { select: { id: true, name: true, email: true, picture: true } } },
+    include: { actor: { select: USER_SELECT } },
   },
 } satisfies Prisma.TaskInclude;
 
@@ -188,70 +198,8 @@ export const createTask = async (req: AuthRequest, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues[0]?.message || "Dados inválidos" });
     }
-    const data = parsed.data;
 
-    let validWorkspaceId: string | null = null;
-    if (data.workspaceId) {
-      const workspace = await prisma.workspace.findFirst({
-        where: { id: data.workspaceId, companyId: company.id },
-      });
-      if (!workspace) {
-        return res.status(400).json({ error: "Workspace inválida" });
-      }
-      validWorkspaceId = workspace.id;
-    }
-
-    if (data.parentId) {
-      await requireTaskInCompany(data.parentId, company.id);
-    }
-
-    const assigneeIds = Array.from(new Set(data.assigneeIds || []));
-    for (const assigneeId of assigneeIds) {
-      await assertAssigneeInCompany(assigneeId, company.id);
-    }
-
-    const task = await prisma.$transaction(async (tx) => {
-      const created = await tx.task.create({
-        data: {
-          title: data.title,
-          description: data.description ?? null,
-          status: data.status ?? TaskStatus.TODO,
-          priority: data.priority ?? TaskPriority.MEDIUM,
-          workspaceId: validWorkspaceId,
-          parentId: data.parentId ?? null,
-          startDate: data.startDate ?? null,
-          dueDate: data.dueDate ?? null,
-          estimatedMinutes: data.estimatedMinutes ?? null,
-          recurrenceRule: data.recurrenceRule ?? undefined,
-          labels: data.labels ?? [],
-          githubPR: data.githubPR ?? null,
-          companyId: company.id,
-          createdById: userId,
-          assignees: assigneeIds.length
-            ? { create: assigneeIds.map((assigneeUserId) => ({ userId: assigneeUserId })) }
-            : undefined,
-        },
-        include: {
-          assignees: { include: { user: { select: { id: true, name: true, email: true, picture: true } } } },
-        },
-      });
-
-      await logActivity(
-        created.id,
-        TaskActivityType.CREATED,
-        userId,
-        undefined,
-        { title: created.title, status: created.status, priority: created.priority },
-        tx
-      );
-
-      return created;
-    });
-
-    if (assigneeIds.length > 0) {
-      void notifyTaskEvent("ASSIGNEE_ADDED", task, userId, assigneeIds);
-    }
-    emitTaskEvent(company.id, "TASK_CREATED", task);
+    const task = await createTaskService(company.id, userId, parsed.data);
 
     return res.status(201).json({ task });
   } catch (error) {
@@ -271,93 +219,12 @@ export const updateTask = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const existing = await requireTaskInCompany(req.params.id, company.id);
-
     const parsed = updateTaskSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues[0]?.message || "Dados inválidos" });
     }
-    const data = parsed.data;
 
-    if (data.workspaceId !== undefined && data.workspaceId !== null) {
-      const workspace = await prisma.workspace.findFirst({
-        where: { id: data.workspaceId, companyId: company.id },
-      });
-      if (!workspace) {
-        return res.status(400).json({ error: "Workspace inválida" });
-      }
-    }
-
-    if (data.parentId) {
-      await requireTaskInCompany(data.parentId, company.id);
-    }
-
-    const updateData: Prisma.TaskUpdateInput = {};
-    if (data.title !== undefined) updateData.title = data.title;
-    if (data.description !== undefined) updateData.description = data.description;
-    if (data.status !== undefined) updateData.status = data.status;
-    if (data.priority !== undefined) updateData.priority = data.priority;
-    if (data.workspaceId !== undefined) {
-      updateData.workspace = data.workspaceId
-        ? { connect: { id: data.workspaceId } }
-        : { disconnect: true };
-    }
-    if (data.parentId !== undefined) {
-      updateData.parent = data.parentId ? { connect: { id: data.parentId } } : { disconnect: true };
-    }
-    if (data.startDate !== undefined) updateData.startDate = data.startDate;
-    if (data.dueDate !== undefined) updateData.dueDate = data.dueDate;
-    if (data.estimatedMinutes !== undefined) updateData.estimatedMinutes = data.estimatedMinutes;
-    if (data.recurrenceRule !== undefined) updateData.recurrenceRule = data.recurrenceRule;
-    if (data.labels !== undefined) updateData.labels = data.labels;
-    if (data.githubPR !== undefined) updateData.githubPR = data.githubPR;
-    if (data.isArchived !== undefined) updateData.isArchived = data.isArchived;
-
-    const activitiesToLog: Array<{ type: TaskActivityType; from: unknown; to: unknown }> = [];
-    if (data.status !== undefined && data.status !== existing.status) {
-      activitiesToLog.push({ type: TaskActivityType.STATUS_CHANGED, from: existing.status, to: data.status });
-    }
-    if (data.priority !== undefined && data.priority !== existing.priority) {
-      activitiesToLog.push({ type: TaskActivityType.PRIORITY_CHANGED, from: existing.priority, to: data.priority });
-    }
-    if (data.dueDate !== undefined && data.dueDate?.getTime() !== existing.dueDate?.getTime()) {
-      activitiesToLog.push({ type: TaskActivityType.DUE_DATE_CHANGED, from: existing.dueDate, to: data.dueDate });
-    }
-    if (data.description !== undefined && data.description !== existing.description) {
-      activitiesToLog.push({ type: TaskActivityType.DESCRIPTION_CHANGED, from: existing.description, to: data.description });
-    }
-    if (data.isArchived !== undefined && data.isArchived !== existing.isArchived) {
-      activitiesToLog.push({ type: TaskActivityType.ARCHIVED, from: existing.isArchived, to: data.isArchived });
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.task.update({
-        where: { id: existing.id },
-        data: updateData,
-        include: {
-          assignees: { include: { user: { select: { id: true, name: true, email: true, picture: true } } } },
-        },
-      });
-
-      for (const activity of activitiesToLog) {
-        await logActivity(existing.id, activity.type, userId, activity.from, activity.to, tx);
-      }
-
-      return result;
-    });
-
-    if (data.status === TaskStatus.DONE && existing.status !== TaskStatus.DONE) {
-      const watchers = await prisma.taskWatcher.findMany({
-        where: { taskId: existing.id },
-        select: { userId: true },
-      });
-      const targetUserIds = [existing.createdById, ...watchers.map((w) => w.userId)];
-      void notifyTaskEvent("STATUS_DONE", updated, userId, targetUserIds);
-    } else if (data.status === TaskStatus.REVIEW && existing.status !== TaskStatus.REVIEW) {
-      void notifyTaskEvent("STATUS_REVIEW", updated, userId, [existing.createdById]);
-    }
-
-    emitTaskEvent(company.id, "TASK_UPDATED", updated);
+    const updated = await updateTaskService(company.id, userId, req.params.id, parsed.data);
 
     return res.json({ task: updated });
   } catch (error) {

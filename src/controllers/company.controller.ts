@@ -88,23 +88,18 @@ export const createCompany = async (req: AuthRequest, res: Response) => {
       },
     });
 
-    // Criar salas iniciais vinculadas ao Lobby
-    await prisma.room.createMany({
-      data: [
-        {
-          title: "Auditório",
-          companyId: company.id,
-          type: "AUDITORIUM",
-          categoryId: null,
-        },
-        // {
-        //   title: "Recepção",
-        //   companyId: company.id,
-        //   type: "OFFICE",
-        //   categoryId: lobbyCategory.id,
-        // },
-      ],
+    // Criar sala inicial do Auditório (fora do Lobby) — cada sala precisa de
+    // um canal de chat pareado (ver ChatService.createChannelForRoom), por
+    // isso usa `create` (retorna o id) em vez de `createMany`.
+    const auditoriumRoom = await prisma.room.create({
+      data: {
+        title: "Auditório",
+        companyId: company.id,
+        type: "AUDITORIUM",
+        categoryId: null,
+      },
     });
+    await ChatService.createChannelForRoom(auditoriumRoom.id);
 
     const room = await prisma.room.create({
       data: {

@@ -2,22 +2,18 @@ import { prisma } from "./prisma.service";
 import { MemberStatus } from "@prisma/client";
 
 /**
- * Resolve a empresa do usuário autenticado: dono tem prioridade,
- * senão busca a primeira membership ACTIVE.
+ * Resolve a empresa "atual" do usuário autenticado: dono OU membro ACTIVE.
+ * Mesmo padrão de `getMyCompany`/`createWorkspace` — sem prioridade dono
+ * primeiro, pra não divergir quando o usuário é dono da própria empresa E
+ * membro ativo de outra (ex: documentos resolvendo pra empresa errada).
  */
 export async function resolveUserCompany(userId: string) {
-  const owned = await prisma.company.findFirst({
-    where: { ownerId: userId },
+  return prisma.company.findFirst({
+    where: {
+      OR: [
+        { ownerId: userId },
+        { members: { some: { userId, status: MemberStatus.ACTIVE } } },
+      ],
+    },
   });
-
-  if (owned) {
-    return owned;
-  }
-
-  const membership = await prisma.companyMember.findFirst({
-    where: { userId, status: MemberStatus.ACTIVE },
-    include: { company: true },
-  });
-
-  return membership?.company ?? null;
 }

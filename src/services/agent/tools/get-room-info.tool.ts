@@ -11,6 +11,10 @@ export const getRoomInfoTool: ToolDef = {
     properties: {},
   },
   run: async (ctx) => {
+    if (!ctx.roomId) {
+      throw new Error("Esta conversa não está associada a uma sala.");
+    }
+
     const room = await prisma.room.findUnique({
       where: { id: ctx.roomId },
       select: { id: true, title: true, type: true },

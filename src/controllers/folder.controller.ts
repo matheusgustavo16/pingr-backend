@@ -47,6 +47,7 @@ export const listFolderContents = async (req: AuthRequest, res: Response) => {
     const [folders, documents] = await Promise.all([
       prisma.folder.findMany({
         where: { companyId: company.id, parentId: folderId, ...scopeFilter },
+        include: { _count: { select: { documents: true, children: true } } },
         orderBy: { title: "asc" },
       }),
       prisma.document.findMany({

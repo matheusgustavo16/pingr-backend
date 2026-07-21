@@ -95,15 +95,17 @@ export const handleMediasoupEvents = async (
   socket.on("MEDIASOUP_GET_PRODUCERS", (data: { roomId: string }, callback) => {
     const roomProducers: any[] = [];
 
-    producers.forEach((socketProducers, socketId) => {
-      // Ignorar o próprio socket
-      if (socketId === socket.id) return;
-
+    producers.forEach((socketProducers) => {
       socketProducers.forEach((producer) => {
+        // Ignorar producers do próprio usuário — inclusive um "fantasma"
+        // deixado por uma reconexão recente (socket antigo ainda não
+        // limpo), que não seria pego só comparando socket.id.
+        if (producer.appData.userId === socket.user?.id) return;
+
         if (producer.appData.roomId === data.roomId) {
           roomProducers.push({
             producerId: producer.id,
-            userId: (io.sockets.sockets.get(socketId) as any)?.user?.id,
+            userId: producer.appData.userId,
             kind: producer.kind,
             appData: producer.appData,
           });
@@ -178,7 +180,12 @@ export const handleMediasoupEvents = async (
         const producer = await transport.produce({
           kind: data.kind,
           rtpParameters: data.rtpParameters,
-          appData: data.appData,
+          // userId gravado no appData (não só derivado do socket.id) pra
+          // sobreviver a reconexões: se o socket antigo cair e um novo
+          // socket do mesmo usuário pedir GET_PRODUCERS antes da limpeza
+          // do disconnect terminar, ainda dá pra identificar e excluir
+          // esse producer "fantasma" como sendo do próprio usuário.
+          appData: { ...data.appData, userId: socket.user?.id },
         });
 
         if (!producers.has(socket.id)) producers.set(socket.id, new Map());

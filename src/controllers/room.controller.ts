@@ -24,13 +24,12 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
     }
 
-    // Criar sala é ação estrutural do mapa — só admin/dono.
     const requester = await prisma.companyMember.findUnique({
       where: { userId_companyId: { userId, companyId: company.id } },
     });
 
-    if (!requester || (requester.role !== "OWNER" && requester.role !== "ADMIN")) {
-      return res.status(403).json({ error: "Apenas administradores podem criar salas" });
+    if (!requester) {
+      return res.status(403).json({ error: "Você não é membro dessa empresa" });
     }
 
     if (!title) {
@@ -43,6 +42,15 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
 
     if (!validTypes.includes(roomType)) {
       return res.status(400).json({ error: "Tipo de sala inválido" });
+    }
+
+    // Criar sala é ação estrutural do mapa — só admin/dono. Exceção: "huddle"
+    // pessoal — MEETING avulso, sem categoria nem workspace (mesma
+    // assinatura que createHuddleRoom já usa hoje). É uma call efêmera entre
+    // pessoas, não uma sala do organograma, então qualquer membro pode criar.
+    const isPersonalHuddle = roomType === RoomTypes.MEETING && !categoryId && !workspaceId;
+    if (!isPersonalHuddle && requester.role !== "OWNER" && requester.role !== "ADMIN") {
+      return res.status(403).json({ error: "Apenas administradores podem criar salas" });
     }
 
     // Validar workspaceId se fornecido (deve pertencer à empresa)
@@ -109,6 +117,10 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
       x: result.x,
       y: result.y,
       order: result.order,
+      // Timestamp real de criação — usado pelo frontend pra calcular o
+      // limite de 15min das quick calls (huddle pessoal) a partir de um
+      // horário de servidor, não de quando o cliente entrou.
+      createdAt: result.createdAt,
     };
 
     try {

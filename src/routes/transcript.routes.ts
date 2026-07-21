@@ -3,6 +3,7 @@ import {
   listTranscripts,
   listCallSessions,
   listMyCallSessions,
+  getMyCallSessionStats,
 } from "../controllers/transcript.controller";
 import { listAgentActions } from "../controllers/agent.controller";
 import { authenticate } from "../middleware/auth.middleware";
@@ -10,6 +11,7 @@ import { authenticate } from "../middleware/auth.middleware";
 const router = Router();
 
 // Rotas estáticas antes de /:roomId para não capturar "me" como id
+router.get("/me/call-sessions/stats", authenticate, getMyCallSessionStats);
 router.get("/me/call-sessions", authenticate, listMyCallSessions);
 
 router.get("/:roomId/transcripts", authenticate, listTranscripts);

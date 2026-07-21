@@ -1,18 +1,32 @@
+import { AgentLLMProvider } from "@prisma/client";
 import { anthropicProvider } from "./anthropic-provider";
 import { openaiProvider } from "./openai-provider";
+import { deepseekProvider } from "./deepseek-provider";
 import type { AgentProvider } from "./types";
 
+const providersByKind: Record<AgentLLMProvider, AgentProvider> = {
+  ANTHROPIC: anthropicProvider,
+  OPENAI: openaiProvider,
+  DEEPSEEK: deepseekProvider,
+};
+
 /**
- * Claude é o provider padrão. Se ANTHROPIC_API_KEY não estiver definida,
- * cai para OpenAI (se OPENAI_API_KEY estiver configurada) — permite rodar
- * o agente PINGR sem depender de uma chave específica.
+ * Retorna o provider configurado para um agente específico (Agent.provider).
  */
-export function getAgentProvider(): AgentProvider {
-  if (process.env.ANTHROPIC_API_KEY) return anthropicProvider;
-  if (process.env.OPENAI_API_KEY) return openaiProvider;
-  throw new Error(
-    "Nenhum provider de IA configurado — defina ANTHROPIC_API_KEY ou OPENAI_API_KEY"
-  );
+export function getAgentProvider(provider: AgentLLMProvider): AgentProvider {
+  return providersByKind[provider];
 }
 
-export type { AgentProvider, AgentProviderResult } from "./types";
+/**
+ * Fallback por env, usado só se um agente não tiver provider configurado
+ * (não deveria acontecer — Agent.provider tem default ANTHROPIC). Permite
+ * rodar o agente Pinguelo sem depender de uma chave específica.
+ */
+export function getDefaultAgentProvider(): AgentProvider {
+  if (process.env.ANTHROPIC_API_KEY) return anthropicProvider;
+  if (process.env.OPENAI_API_KEY) return openaiProvider;
+  if (process.env.DEEPSEEK_API_KEY) return deepseekProvider;
+  throw new Error(
+    "Nenhum provider de IA configurado — defina ANTHROPIC_API_KEY, OPENAI_API_KEY ou DEEPSEEK_API_KEY"
+  );
+}

@@ -37,6 +37,7 @@ export class ChatService {
             title: true,
             type: true,
             companyId: true,
+            categoryId: true,
           },
         },
       },
@@ -158,6 +159,7 @@ export class ChatService {
             title: true,
             type: true,
             companyId: true,
+            categoryId: true,
           },
         },
       },
@@ -179,12 +181,31 @@ export class ChatService {
             title: true,
             type: true,
             companyId: true,
+            categoryId: true,
           },
         },
       },
     });
 
     return channel;
+  }
+
+  /**
+   * Igual a `getChannelByRoomId`, mas cria o canal on-demand se a sala ainda
+   * não tiver um — cobre salas antigas que nasceram sem canal pareado (ex:
+   * o Auditório criado no fluxo antigo de `createCompany`, antes desse par
+   * ser garantido pra toda sala).
+   */
+  static async getOrCreateChannelByRoomId(
+    roomId: string
+  ): Promise<ChatChannelInfo | null> {
+    const existing = await this.getChannelByRoomId(roomId);
+    if (existing) return existing;
+
+    const room = await prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) return null;
+
+    return this.createChannelForRoom(roomId);
   }
 
   /**
@@ -259,6 +280,7 @@ export class ChatService {
         isEdited: msg.isEdited,
         isDeleted: msg.isDeleted,
         isPinned: msg.isPinned,
+        metadata: (msg.metadata as Record<string, unknown> | null) ?? null,
         author: msg.author
           ? {
               id: msg.author.id,
@@ -283,19 +305,20 @@ export class ChatService {
   }
 
   /**
-   * Busca o bot padrão da Pingr (sem companyId)
+   * Busca o bot do agente de sistema (Pinguelo, sem companyId).
+   * `provider: "pingr"` é um marcador interno de identidade de chat — não confundir com `Agent.provider` (escolha de LLM).
    */
-  static async getPingrBot() {
+  static async getSystemAgentBot() {
     const bot = await prisma.chatBot.findFirst({
       where: {
         companyId: null,
         provider: "pingr",
-        name: "Pingr Bot",
+        name: "Pinguelo",
       },
     });
 
     if (!bot) {
-      throw new Error("Bot padrão da Pingr não encontrado");
+      throw new Error("Bot padrão do Pinguelo não encontrado");
     }
 
     return bot;
@@ -366,7 +389,10 @@ export class ChatService {
         isEdited: message.isEdited,
         isDeleted: message.isDeleted,
         isPinned: message.isPinned,
-        author: null, // Mensagens de bot não têm author
+        metadata: (message.metadata as Record<string, unknown> | null) ?? null,
+        // Dobra o bot em "author" (mesmo contrato de listMessages) — front
+        // não precisa saber a diferença entre autor humano e bot do agente.
+        author: { id: bot.id, name: bot.name, email: "", picture: bot.picture },
       };
     }
 
@@ -439,6 +465,130 @@ export class ChatService {
       isEdited: message.isEdited,
       isDeleted: message.isDeleted,
       isPinned: message.isPinned,
+      metadata: (message.metadata as Record<string, unknown> | null) ?? null,
+      author: message.author
+        ? {
+            id: message.author.id,
+            name: message.author.name,
+            email: message.author.email,
+            picture: message.author.picture,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Envia um arquivo como mensagem — cria a mensagem (type FILE) e um
+   * Document espelhado (mesmo contrato do anexo de task), herdando a
+   * categoria da sala do canal automaticamente.
+   */
+  static async sendFileMessage(
+    channelId: string,
+    userId: string,
+    file: { buffer: Buffer; originalname: string; mimetype: string; size: number },
+    caption?: string
+  ): Promise<MessageWithAuthor> {
+    const channel = await prisma.chatChannel.findUnique({
+      where: { id: channelId },
+      include: {
+        room: {
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            companyId: true,
+            categoryId: true,
+            workspaceId: true,
+          },
+        },
+      },
+    });
+    if (!channel) {
+      throw new Error("Canal não encontrado");
+    }
+
+    const isMember = await this.verifyCompanyMember(userId, channel.room.companyId);
+    if (!isMember) {
+      throw new Error("Usuário não é membro ativo da empresa");
+    }
+
+    let participant = await this.verifyParticipant(userId, channelId);
+    if (!participant) {
+      participant = await prisma.chatParticipant.create({
+        data: { userId, channelId, role: ChatRole.MEMBER },
+        include: {
+          user: { select: { id: true, name: true, email: true, picture: true } },
+        },
+      });
+    }
+    if (!this.canSendMessage(participant)) {
+      throw new Error("Usuário não tem permissão para enviar mensagens");
+    }
+
+    const { uploadFile } = await import("./cloudinary.service");
+    const uploadResult = await uploadFile(
+      file.buffer,
+      `documents/${channel.room.companyId}/chat/${channelId}`,
+      file.originalname,
+      file.mimetype
+    );
+
+    const { message, document } = await prisma.$transaction(async (tx) => {
+      const created = await tx.chatMessage.create({
+        data: {
+          content: caption?.trim() || file.originalname,
+          type: MessageType.FILE,
+          authorId: userId,
+          channelId,
+        },
+      });
+
+      const doc = await tx.document.create({
+        data: {
+          fileName: file.originalname,
+          fileUrl: uploadResult.url,
+          publicId: uploadResult.publicId,
+          fileType: file.mimetype,
+          fileSize: file.size,
+          companyId: channel.room.companyId,
+          workspaceId: channel.room.workspaceId,
+          categoryId: channel.room.categoryId,
+          uploadedById: userId,
+          chatMessageId: created.id,
+        },
+      });
+
+      const updated = await tx.chatMessage.update({
+        where: { id: created.id },
+        data: {
+          metadata: {
+            documentId: doc.id,
+            fileUrl: doc.fileUrl,
+            fileName: doc.fileName,
+            fileType: doc.fileType,
+            fileSize: doc.fileSize,
+          },
+        },
+        include: {
+          author: { select: { id: true, name: true, email: true, picture: true } },
+        },
+      });
+
+      return { message: updated, document: doc };
+    });
+
+    await this.notifyOtherParticipants(channel, userId, message.author?.name || "Alguém", `📎 ${file.originalname}`);
+
+    return {
+      id: message.id,
+      content: message.content,
+      type: message.type,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      isEdited: message.isEdited,
+      isDeleted: message.isDeleted,
+      isPinned: message.isPinned,
+      metadata: message.metadata as Record<string, unknown>,
       author: message.author
         ? {
             id: message.author.id,
@@ -534,6 +684,7 @@ export class ChatService {
       isEdited: updated.isEdited,
       isDeleted: updated.isDeleted,
       isPinned: updated.isPinned,
+      metadata: (updated.metadata as Record<string, unknown> | null) ?? null,
       author: updated.author
         ? {
             id: updated.author.id,
@@ -851,6 +1002,7 @@ export class ChatService {
       isEdited: updated.isEdited,
       isDeleted: updated.isDeleted,
       isPinned: updated.isPinned,
+      metadata: (updated.metadata as Record<string, unknown> | null) ?? null,
       author: updated.author
         ? {
             id: updated.author.id,

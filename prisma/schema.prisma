@@ -39,6 +39,8 @@ model User {
   taskActivities        TaskActivity[]      @relation("TaskActivityActor")
   createdFolders        Folder[]            @relation("FolderCreator")
   uploadedDocuments     Document[]          @relation("DocumentUploader")
+  createdAgents         Agent[]
+  createdConversations  AgentConversation[]
 
   @@map("users")
 }
@@ -69,7 +71,7 @@ model Company {
   picture   String?
 
   ownerId        String
-  owner          User            @relation("CompanyOwner", fields: [ownerId], references: [id])
+  owner          User                @relation("CompanyOwner", fields: [ownerId], references: [id])
   members        CompanyMember[]
   rooms          Room[]
   categories     RoomCategory[]
@@ -80,6 +82,8 @@ model Company {
   decorations    OfficeDecoration[]
   folders        Folder[]
   documents      Document[]
+  agents         Agent[]
+  conversations  AgentConversation[]
 
   @@map("companies")
 }
@@ -171,7 +175,11 @@ model RoomCategory {
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id])
 
-  rooms Room[]
+  rooms          Room[]
+  agents         Agent[]
+  scheduleEvents ScheduleEvent[]
+  tasks          Task[]
+  documents      Document[]
 
   @@map("room_categories")
 }
@@ -214,6 +222,7 @@ enum RoomTypes {
   ADVISORY
   VOICE
   DEV
+  PINGUELO
 }
 
 enum UserStatus {
@@ -255,8 +264,126 @@ model ChatBot {
   company   Company? @relation(fields: [companyId], references: [id])
 
   messages ChatMessage[]
+  agent    Agent?
 
   @@map("chat_bots")
+}
+
+enum AgentKind {
+  SYSTEM // bot único da plataforma ("Pinguelo"), companyId null, singleton
+  TEMPLATE // catálogo de templates, companyId null, não invocável direto
+  COMPANY // instância de uma empresa, criada a partir de template ou do zero
+}
+
+enum AgentLLMProvider {
+  ANTHROPIC
+  OPENAI
+  DEEPSEEK
+}
+
+model Agent {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  kind     AgentKind @default(COMPANY)
+  isActive Boolean   @default(true)
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  templateId String?
+  template   Agent?  @relation("AgentTemplateInstances", fields: [templateId], references: [id], onDelete: SetNull)
+  instances  Agent[] @relation("AgentTemplateInstances")
+
+  // Categoria da empresa a que este agente está associado (opcional)
+  categoryId String?
+  category   RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  // Persona / DNA
+  name        String
+  age         Int?
+  avatarUrl   String?
+  specialty   String
+  philosophy  String?
+  jobFunction String
+
+  // Provider/model por agente — sobrepõe o default de env. Não confundir
+  // com ChatBot.provider (marcador de identidade de chat, valores diferentes).
+  provider AgentLLMProvider @default(ANTHROPIC)
+  model    String?
+
+  // Escopo de tools que este agente pode chamar (nomes de ToolDef.name)
+  allowedTools  String[] @default([])
+  // Reservado para v2 (triggers automáticos/autônomos) — não usado no v1
+  triggerConfig Json?
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+
+  chatBotId String?  @unique
+  chatBot   ChatBot? @relation(fields: [chatBotId], references: [id])
+
+  actionLogs           AgentActionLog[]
+  conversationMessages AgentConversationMessage[]
+
+  @@index([companyId])
+  @@index([kind])
+  @@index([categoryId])
+  @@map("agents")
+}
+
+enum ConversationVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+model AgentConversation {
+  id         String                 @id @default(uuid())
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  title      String                 @default("Nova conversa")
+  visibility ConversationVisibility @default(PRIVATE)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  messages AgentConversationMessage[]
+
+  @@index([companyId, createdById])
+  @@index([companyId, visibility])
+  @@map("agent_conversations")
+}
+
+model AgentConversationMessage {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  conversationId String
+  conversation   AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role    MessageRole
+  content String
+
+  agentId String?
+  agent   Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  toolName     String?
+  toolArgs     Json?
+  toolResult   Json?
+  status       AgentActionStatus @default(SUCCESS)
+  errorMessage String?
+
+  @@index([conversationId, createdAt])
+  @@map("agent_conversation_messages")
 }
 
 model ChatMessage {
@@ -277,6 +404,10 @@ model ChatMessage {
   channelId String
   channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
+  /// Espelho em Documentos quando type = FILE — cascade remove o Document
+  /// quando a mensagem some (mesmo contrato do TaskAttachment).
+  document Document?
+
   @@index([channelId, createdAt])
   @@index([channelId, isPinned])
   @@index([botId])
@@ -287,6 +418,7 @@ enum MessageType {
   TEXT
   SYSTEM
   BOT
+  FILE
 }
 
 model ChatReadState {
@@ -345,6 +477,11 @@ enum EventVisibility {
   PRIVATE
 }
 
+enum EventExceptionAction {
+  CANCELLED
+  MODIFIED
+}
+
 model ScheduleEvent {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -365,14 +502,57 @@ model ScheduleEvent {
 
   roomByEventRef Room? @relation("RoomScheduledEvent")
 
+  // Categoria da empresa a que este evento está associado (opcional)
+  categoryId String?
+  category   RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
   createdById String
   createdBy   User   @relation("ScheduleEventCreator", fields: [createdById], references: [id])
 
   provider   String? // ex: "google", "outlook", etc
   externalId String? // ID do evento no calendário externo
 
+  // Recorrência (RFC 5545 / RRULE) — nunca materializamos ocorrências
+  // futuras no banco. Este registro é sempre o evento "mestre" (a primeira
+  // ocorrência); as demais são geradas sob demanda a partir de startAt +
+  // recurrenceRule, dentro do range pedido pelo cliente.
+  isRecurring     Boolean   @default(false)
+  recurrenceRule  String? // ex: "FREQ=WEEKLY;BYDAY=MO,WE" — sem DTSTART/UNTIL embutidos
+  recurrenceUntil DateTime? // limite opcional da recorrência (null = sem fim)
+
+  exceptions EventException[]
+
   @@index([companyId, startAt])
+  @@index([categoryId])
   @@map("schedule_events")
+}
+
+// Desvios pontuais de uma ocorrência específica de um evento recorrente —
+// pular ou editar só aquele dia, sem afetar o resto da série e sem criar
+// uma linha por ocorrência futura.
+model EventException {
+  id String @id @default(uuid())
+
+  eventId String
+  event   ScheduleEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  // Data/hora de início ORIGINAL da ocorrência afetada (antes de qualquer
+  // edição) — é a chave que casa a exceção com a ocorrência gerada pelo
+  // RRULE na hora da expansão.
+  occurrenceDate DateTime
+
+  action EventExceptionAction
+
+  // Quando action = MODIFIED: campos sobrescritos nessa ocorrência
+  // (title/startAt/endAt/visibility). Ignorado quando CANCELLED.
+  payload Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([eventId, occurrenceDate])
+  @@index([eventId])
+  @@map("schedule_event_exceptions")
 }
 
 model Integration {
@@ -491,6 +671,9 @@ model AgentActionLog {
 
   roomId String
 
+  agentId String?
+  agent   Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
   triggeredByUserId String?
   triggeredBy       User?   @relation(fields: [triggeredByUserId], references: [id])
 
@@ -508,6 +691,7 @@ model AgentActionLog {
 
   @@index([roomId, createdAt])
   @@index([callSessionId])
+  @@index([agentId])
   @@map("agent_action_logs")
 }
 
@@ -573,6 +757,8 @@ model Task {
   company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  categoryId  String?
+  category    RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   createdById String
   createdBy   User       @relation("TaskCreator", fields: [createdById], references: [id])
   parentId    String?
@@ -588,6 +774,7 @@ model Task {
 
   @@index([companyId, status])
   @@index([companyId, workspaceId])
+  @@index([categoryId])
   @@index([parentId])
   @@index([dueDate])
   @@map("tasks")
@@ -682,6 +869,9 @@ model TaskAttachment {
   uploadedById String
   uploadedBy   User   @relation("TaskAttachmentUploader", fields: [uploadedById], references: [id])
 
+  /// Espelho em Documentos — cascade remove o Document quando o anexo some.
+  document Document?
+
   @@index([taskId])
   @@map("task_attachments")
 }
@@ -746,10 +936,26 @@ model Document {
   folderId String?
   folder   Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
 
+  // Categoria da empresa a que este documento está associado — quando o
+  // arquivo vem de uma mensagem de chat (chatMessageId), é herdada
+  // automaticamente da categoria da sala do canal; upload manual pela
+  // página Documentos também pode setar.
+  categoryId String?
+  category   RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
   uploadedById String
   uploadedBy   User   @relation("DocumentUploader", fields: [uploadedById], references: [id])
 
+  /// Quando o arquivo veio de um anexo de tarefa (mesmo publicId/arquivo no Cloudinary).
+  taskAttachmentId String?         @unique
+  taskAttachment   TaskAttachment? @relation(fields: [taskAttachmentId], references: [id], onDelete: Cascade)
+
+  /// Quando o arquivo veio de uma mensagem enviada num canal de texto.
+  chatMessageId String?      @unique
+  chatMessage   ChatMessage? @relation(fields: [chatMessageId], references: [id], onDelete: Cascade)
+
   @@index([companyId, folderId])
   @@index([companyId, workspaceId])
+  @@index([categoryId])
   @@map("documents")
 }

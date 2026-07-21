@@ -12,6 +12,7 @@ import {
 import { WebSocketServer } from "../ws/socket-server";
 import { prisma } from "../services/prisma.service";
 import { LinkPreviewService } from "../services/link-preview.service";
+import { maybeTriggerAgentMention } from "../services/agent/chat-mention.service";
 
 /**
  * Lista mensagens de um canal (paginado)
@@ -102,6 +103,14 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
             roomId: channel.roomId,
             message,
           });
+
+        // "@NomeDoAgente" numa mensagem humana aciona o agente associado à
+        // categoria da sala — não bloqueia a resposta deste request.
+        if (!botId) {
+          void maybeTriggerAgentMention({ io, channel, content, userId }).catch((error) => {
+            console.error("Erro ao acionar agente mencionado no chat:", error);
+          });
+        }
       }
     } catch (error) {
       console.error("Erro ao emitir evento WebSocket:", error);
@@ -111,6 +120,69 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     return res.status(201).json({ message });
   } catch (error: any) {
     console.error("Erro ao enviar mensagem:", error);
+    if (
+      error.message.includes("não encontrado") ||
+      error.message.includes("não é membro") ||
+      error.message.includes("não tem permissão")
+    ) {
+      return res.status(403).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Envia um arquivo como mensagem no canal (cria Document espelhado,
+ * herdando a categoria da sala)
+ * POST /chat/channels/:channelId/attachments
+ */
+export const uploadChatAttachment = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { channelId } = req.params;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "Nenhum arquivo enviado" });
+    }
+
+    const caption = typeof req.body?.content === "string" ? req.body.content : undefined;
+
+    const message = await ChatService.sendFileMessage(
+      channelId,
+      userId,
+      {
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size,
+      },
+      caption
+    );
+
+    try {
+      const wsServer = WebSocketServer.getInstance();
+      const io = wsServer.getIO();
+      const channel = await ChatService.getChannel(channelId);
+      if (channel) {
+        io.to(channel.roomId)
+          .to(`company:${channel.room.companyId}`)
+          .emit("NEW_MESSAGE", {
+            channelId,
+            roomId: channel.roomId,
+            message,
+          });
+      }
+    } catch (error) {
+      console.error("Erro ao emitir evento WebSocket:", error);
+    }
+
+    return res.status(201).json({ message });
+  } catch (error: any) {
+    console.error("Erro ao enviar arquivo no chat:", error);
     if (
       error.message.includes("não encontrado") ||
       error.message.includes("não é membro") ||
@@ -288,10 +360,10 @@ export const getChannelByRoom = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const channel = await ChatService.getChannelByRoomId(roomId);
+    const channel = await ChatService.getOrCreateChannelByRoomId(roomId);
 
     if (!channel) {
-      return res.status(404).json({ error: "Canal não encontrado para esta sala" });
+      return res.status(404).json({ error: "Sala não encontrada" });
     }
 
     // Verificar se é membro ativo da empresa
@@ -371,10 +443,10 @@ export const getLinkPreview = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * Busca o bot padrão da Pingr
+ * Busca o bot do agente de sistema (Pinguelo)
  * GET /chat/bots/pingr
  */
-export const getPingrBot = async (req: AuthRequest, res: Response) => {
+export const getSystemAgentBot = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
 
@@ -382,11 +454,11 @@ export const getPingrBot = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const bot = await ChatService.getPingrBot();
+    const bot = await ChatService.getSystemAgentBot();
 
     return res.json({ bot });
   } catch (error: any) {
-    console.error("Erro ao buscar bot da Pingr:", error);
+    console.error("Erro ao buscar bot do Pinguelo:", error);
     if (error.message.includes("não encontrado")) {
       return res.status(404).json({ error: error.message });
     }

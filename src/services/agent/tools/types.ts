@@ -1,5 +1,9 @@
 export interface AgentContext {
-  roomId: string;
+  agentId: string;
+  // null quando o agente é invocado fora de uma Room de escritório — ex.
+  // conversas do hub /office/agents (AgentConversation), que não têm sala.
+  roomId: string | null;
+  channelId?: string | null;
   callSessionId: string | null;
   userId: string;
   companyId: string;

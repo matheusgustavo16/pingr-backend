@@ -230,12 +230,12 @@ export const handleGitHubWebhook = async (req: Request, res: Response) => {
       return res.status(200).json({ message: "Canal de chat não encontrado" });
     }
 
-    // Buscar bot padrão da Pingr
+    // Buscar bot do agente de sistema (Pinguelo)
     let bot;
     try {
-      bot = await ChatService.getPingrBot();
+      bot = await ChatService.getSystemAgentBot();
     } catch (error) {
-      console.error("Erro ao buscar bot da Pingr:", error);
+      console.error("Erro ao buscar bot do Pinguelo:", error);
       return res.status(500).json({ error: "Bot não encontrado" });
     }
 

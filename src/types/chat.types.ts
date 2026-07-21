@@ -42,6 +42,8 @@ export interface MessageWithAuthor {
   isEdited: boolean;
   isDeleted: boolean;
   isPinned: boolean;
+  /** Preenchido para type = FILE: { documentId, fileUrl, fileName, fileType, fileSize }. */
+  metadata: Record<string, unknown> | null;
   author: {
     id: string;
     name: string;
@@ -81,5 +83,6 @@ export interface ChatChannelInfo {
     title: string;
     type: string;
     companyId: string;
+    categoryId: string | null;
   };
 }

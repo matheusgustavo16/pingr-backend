@@ -4,6 +4,7 @@ import { presenceService } from "../presence/presence-service";
 import { joinRoom, leaveRoom, toOfficePresencePayload } from "../rooms/room-manager";
 import { handleMediasoupEvents } from "./mediasoup-handler";
 import { handleVoiceCommandEvents } from "./voice-command-handler";
+import { handleQuickCallEvents } from "./quick-call-handler";
 import { prisma } from "../../services/prisma.service";
 import { MemberStatus } from "@prisma/client";
 
@@ -21,6 +22,7 @@ export const handleConnection = async (
 
   handleMediasoupEvents(io, authSocket);
   handleVoiceCommandEvents(io, authSocket);
+  handleQuickCallEvents(io, authSocket);
 
   // Sala pessoal do usuário, usada para notificações direcionadas (multi-tab/multi-device)
   socket.join(`user:${user.id}`);
@@ -105,11 +107,16 @@ export const handleConnection = async (
 
   // Evento: Entrar em uma sala
   socket.on("JOIN_ROOM", (data: { roomId: string }) => {
-    void joinRoom(io, authSocket, data.roomId);
+    const token = (authSocket.roomJoinToken = (authSocket.roomJoinToken || 0) + 1);
+    void joinRoom(io, authSocket, data.roomId, token);
   });
 
   // Evento: Sair de uma sala
   socket.on("LEAVE_ROOM", () => {
+    // Invalida qualquer JOIN_ROOM em andamento (ainda resolvendo as queries
+    // async abaixo) — sem isso ele aplicaria a presença depois do leave e
+    // ficaria "grudado" na sala pra sempre (usuário já saiu da UI).
+    authSocket.roomJoinToken = (authSocket.roomJoinToken || 0) + 1;
     leaveRoom(io, authSocket);
   });
 
