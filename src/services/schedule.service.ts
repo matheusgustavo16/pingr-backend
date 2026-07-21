@@ -67,7 +67,7 @@ export class ScheduleService {
       assertValidRecurrenceRule(data.recurrenceRule);
     }
 
-    const categoryId = await this.resolveCategoryId(data.companyId, data.categoryId);
+    let categoryId = await this.resolveCategoryId(data.companyId, data.categoryId);
 
     // Se não houver sala, criar automaticamente
     if (!roomId) {
@@ -79,6 +79,10 @@ export class ScheduleService {
         },
       });
       roomId = room.id;
+    } else if (categoryId === undefined) {
+      // Sala existente vinculada sem categoria explícita — herda a da sala.
+      const room = await prisma.room.findUnique({ where: { id: roomId } });
+      categoryId = room?.categoryId ?? null;
     }
 
     // Criar o evento (sempre a primeira ocorrência — recorrências seguintes
@@ -320,11 +324,12 @@ export class ScheduleService {
 
     // Atualizar o evento e associar o eventRefId na sala
     const updatedEvent = await prisma.$transaction(async (tx) => {
-      // Atualizar o evento
+      // Atualizar o evento — herda a categoria da sala vinculada
       const event = await tx.scheduleEvent.update({
         where: { id: eventId },
         data: {
           roomId: roomId,
+          categoryId: room.categoryId ?? null,
         },
         include: {
           company: {
@@ -347,6 +352,9 @@ export class ScheduleService {
               email: true,
               picture: true,
             },
+          },
+          category: {
+            select: { id: true, title: true, emoji: true },
           },
         },
       });
@@ -392,6 +400,9 @@ export class ScheduleService {
                 email: true,
                 picture: true,
               },
+            },
+            category: {
+              select: { id: true, title: true, emoji: true },
             },
           },
         },

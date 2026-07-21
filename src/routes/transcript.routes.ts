@@ -6,6 +6,7 @@ import {
   getMyCallSessionStats,
 } from "../controllers/transcript.controller";
 import { listAgentActions } from "../controllers/agent.controller";
+import { getCallSessionSummary } from "../controllers/meeting-summary.controller";
 import { authenticate } from "../middleware/auth.middleware";
 
 const router = Router();
@@ -16,6 +17,7 @@ router.get("/me/call-sessions", authenticate, listMyCallSessions);
 
 router.get("/:roomId/transcripts", authenticate, listTranscripts);
 router.get("/:roomId/call-sessions", authenticate, listCallSessions);
+router.get("/:roomId/call-sessions/:callSessionId/summary", authenticate, getCallSessionSummary);
 router.get("/:roomId/agent-actions", authenticate, listAgentActions);
 
 export default router;

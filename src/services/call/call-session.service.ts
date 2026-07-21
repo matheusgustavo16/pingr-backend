@@ -29,11 +29,23 @@ async function startOrGetActive(roomId: string, userId: string): Promise<string>
   }
 }
 
-async function endActive(roomId: string): Promise<void> {
-  await prisma.callSession.updateMany({
+// Retorna os ids das sessões que acabaram de ser encerradas (endedAt era
+// null antes desta chamada) — o caller usa isso pra saber pra quais sessões
+// disparar o processamento pós-call (ex: geração de resumo), sem disparar de
+// novo em chamadas subsequentes que não fecham nada.
+async function endActive(roomId: string): Promise<string[]> {
+  const active = await prisma.callSession.findMany({
     where: { roomId, endedAt: null },
+    select: { id: true },
+  });
+  if (active.length === 0) return [];
+
+  const ids = active.map((s) => s.id);
+  await prisma.callSession.updateMany({
+    where: { id: { in: ids } },
     data: { endedAt: new Date() },
   });
+  return ids;
 }
 
 async function getActiveId(roomId: string): Promise<string | null> {

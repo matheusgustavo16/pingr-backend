@@ -4,6 +4,7 @@ import { AuthenticatedSocket } from "../auth/authenticate";
 import { MediasoupManager } from "../mediasoup/mediasoup-manager";
 import { transcriptionPipeline } from "../../services/transcription/transcription-pipeline";
 import { callSessionService } from "../../services/call/call-session.service";
+import { meetingSummaryService } from "../../services/meeting-summary/meeting-summary.service";
 
 // Mapas para gerenciar o estado em memória (vincular ao Socket ID)
 const transports = new Map<
@@ -68,7 +69,10 @@ async function syncTranscriptionForRoom(io: SocketIOServer, roomId: string) {
   }
 
   if (!transcriptionPipeline.hasActivePipelineForRoom(roomId)) {
-    await callSessionService.endActive(roomId);
+    const closedSessionIds = await callSessionService.endActive(roomId);
+    for (const callSessionId of closedSessionIds) {
+      meetingSummaryService.enqueueForCallSession(callSessionId);
+    }
   }
 }
 

@@ -4,7 +4,7 @@ import { prisma } from "../services/prisma.service";
 import { ChatService } from "../services/chat.service";
 import { MemberStatus } from "@prisma/client";
 
-async function assertRoomAccess(roomId: string, userId: string) {
+export async function assertRoomAccess(roomId: string, userId: string) {
   const room = await prisma.room.findUnique({
     where: { id: roomId },
     select: { id: true, companyId: true },

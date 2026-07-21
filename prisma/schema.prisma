@@ -634,9 +634,48 @@ model CallSession {
 
   transcriptSegments TranscriptSegment[]
   agentActionLogs    AgentActionLog[]
+  meetingSummary     MeetingSummary?
 
   @@index([roomId, createdAt])
   @@map("call_sessions")
+}
+
+enum MeetingSummaryStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Resumo estruturado gerado por IA a partir da transcrição de uma CallSession.
+// Campos estruturados (não só o markdown) ficam em colunas próprias de propósito —
+// para permitir consulta/agregação futura entre reuniões (memória organizacional)
+// sem precisar reprocessar o markdown.
+model MeetingSummary {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  callSessionId String      @unique
+  callSession   CallSession @relation(fields: [callSessionId], references: [id], onDelete: Cascade)
+
+  status       MeetingSummaryStatus @default(PENDING)
+  errorMessage String?
+
+  provider AgentLLMProvider?
+  model    String?
+
+  summary         String?
+  decisions       Json?
+  actionItems     Json?
+  risks           Json?
+  insights        Json?
+  discussedTopics Json?
+  keywords        String[] @default([])
+
+  markdown String?
+
+  @@map("meeting_summaries")
 }
 
 model TranscriptSegment {
