@@ -3,6 +3,7 @@ import { AgentLLMProvider, MeetingSummaryStatus, Prisma } from "@prisma/client";
 import { createQueue } from "../queue/simple-queue";
 import { generateMeetingSummary } from "./summary-provider";
 import { buildSummaryMarkdown } from "./markdown-generator";
+import { knowledgeEmbeddingService } from "../knowledge/knowledge-embedding.service";
 
 const providerNameToEnum: Record<string, AgentLLMProvider> = {
   anthropic: AgentLLMProvider.ANTHROPIC,
@@ -55,6 +56,10 @@ async function process(callSessionId: string): Promise<void> {
         markdown,
         errorMessage: null,
       },
+    });
+
+    knowledgeEmbeddingService.enqueueForSummary(callSessionId).catch((err) => {
+      console.error(`[knowledge-embedding] falha ao enfileirar callSession ${callSessionId}:`, err);
     });
   } catch (err: any) {
     console.error(`[meeting-summary] falhou para callSession ${callSessionId}:`, err);

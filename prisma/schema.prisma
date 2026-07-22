@@ -70,20 +70,23 @@ model Company {
   cnpj      String?  @unique
   picture   String?
 
-  ownerId        String
-  owner          User                @relation("CompanyOwner", fields: [ownerId], references: [id])
-  members        CompanyMember[]
-  rooms          Room[]
-  categories     RoomCategory[]
-  scheduleEvents ScheduleEvent[]
-  workspaces     Workspace[]
-  chatBots       ChatBot[]
-  tasks          Task[]
-  decorations    OfficeDecoration[]
-  folders        Folder[]
-  documents      Document[]
-  agents         Agent[]
-  conversations  AgentConversation[]
+  ownerId             String
+  owner               User                 @relation("CompanyOwner", fields: [ownerId], references: [id])
+  members             CompanyMember[]
+  rooms               Room[]
+  categories          RoomCategory[]
+  scheduleEvents      ScheduleEvent[]
+  workspaces          Workspace[]
+  chatBots            ChatBot[]
+  tasks               Task[]
+  decorations         OfficeDecoration[]
+  folders             Folder[]
+  documents           Document[]
+  agents              Agent[]
+  conversations       AgentConversation[]
+  knowledgeChunks     KnowledgeChunk[]
+  knowledgeUsages     KnowledgeUsage[]
+  knowledgeSearchLogs KnowledgeSearchLog[]
 
   @@map("companies")
 }
@@ -123,11 +126,12 @@ model Workspace {
   githubRepoUrl      String?
   githubWebhookId    Int?
 
-  roomCategories RoomCategory[]
-  rooms          Room[]
-  tasks          Task[]
-  folders        Folder[]
-  documents      Document[]
+  roomCategories  RoomCategory[]
+  rooms           Room[]
+  tasks           Task[]
+  folders         Folder[]
+  documents       Document[]
+  knowledgeChunks KnowledgeChunk[]
 
   @@map("workspaces")
 }
@@ -793,16 +797,16 @@ model Task {
   isArchived       Boolean      @default(false)
 
   companyId   String
-  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   workspaceId String?
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  workspace   Workspace?    @relation(fields: [workspaceId], references: [id])
   categoryId  String?
   category    RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   createdById String
-  createdBy   User       @relation("TaskCreator", fields: [createdById], references: [id])
+  createdBy   User          @relation("TaskCreator", fields: [createdById], references: [id])
   parentId    String?
-  parent      Task?      @relation("TaskSubtasks", fields: [parentId], references: [id], onDelete: Cascade)
-  subtasks    Task[]     @relation("TaskSubtasks")
+  parent      Task?         @relation("TaskSubtasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subtasks    Task[]        @relation("TaskSubtasks")
 
   assignees   TaskAssignee[]
   watchers    TaskWatcher[]
@@ -997,4 +1001,82 @@ model Document {
   @@index([companyId, workspaceId])
   @@index([categoryId])
   @@map("documents")
+}
+
+enum KnowledgeSourceType {
+  MEETING_SUMMARY
+}
+
+enum KnowledgeChunkStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// Base de conhecimento corporativo (RAG): trechos de texto embedados a
+// partir de fontes internas (hoje só MeetingSummary) para busca semântica
+// por agentes. Coluna `embedding` é vector(1536) via pgvector — mapeada como
+// Unsupported porque o Prisma não tem tipo nativo; ver migration.sql da
+// criação desta tabela para a definição real da coluna/índice.
+model KnowledgeChunk {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  sourceType  KnowledgeSourceType
+  sourceId    String // callSessionId hoje (via MeetingSummary); futuro: documentId etc.
+  chunkIndex  Int                 @default(0)
+  sourceTitle String? // título legível da origem (ex: título da Room), evita join na listagem de resultados
+
+  content  String
+  metadata Json?
+
+  embedding      Unsupported("vector(1536)")?
+  embeddingModel String?
+  tokenCount     Int?
+
+  status       KnowledgeChunkStatus @default(PENDING)
+  errorMessage String?
+
+  @@unique([sourceType, sourceId, chunkIndex])
+  @@index([companyId, sourceType])
+  @@map("knowledge_chunks")
+}
+
+// Log de toda busca semântica executada — usado pra calibrar
+// MIN_KNOWLEDGE_SCORE e avaliar qualidade do RAG antes de integrar agentes.
+model KnowledgeSearchLog {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  query        String
+  resultsFound Int
+  avgScore     Float?
+
+  @@index([companyId, createdAt])
+  @@map("knowledge_search_logs")
+}
+
+model KnowledgeUsage {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  feature String // "embedding" | "search"
+  tokens  Int
+  costUsd Decimal @db.Decimal(10, 6)
+
+  @@index([companyId, createdAt])
+  @@map("knowledge_usage")
 }

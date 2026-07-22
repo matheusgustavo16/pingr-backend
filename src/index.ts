@@ -18,7 +18,9 @@ import agentConversationsRoutes from "./routes/agent-conversations.routes";
 import taskRoutes from "./routes/task.routes";
 import decorationRoutes from "./routes/decoration.routes";
 import documentRoutes from "./routes/document.routes";
+import knowledgeRoutes from "./routes/knowledge.routes";
 import { WebSocketServer } from "./ws/socket-server";
+import { knowledgeEmbeddingService } from "./services/knowledge/knowledge-embedding.service";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -55,6 +57,13 @@ app.use("/agent-conversations", agentConversationsRoutes);
 app.use("/tasks", taskRoutes);
 app.use("/decorations", decorationRoutes);
 app.use("/documents", documentRoutes);
+app.use("/knowledge", knowledgeRoutes);
+
+try {
+  knowledgeEmbeddingService.startWorker();
+} catch (err: any) {
+  console.warn(`[knowledge-embedding] worker não iniciado: ${err?.message}`);
+}
 
 httpServer.listen(port, () => {
   console.log(`🚀 Server is running on http://localhost:${port}`);

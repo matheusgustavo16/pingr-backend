@@ -8,6 +8,7 @@ import { createTaskTool } from "./create-task.tool";
 import { updateTaskTool } from "./update-task.tool";
 import { createFolderTool } from "./create-folder.tool";
 import { manageAgentTool } from "./manage-agent.tool";
+import { searchKnowledgeBaseTool } from "./search-knowledge-base.tool";
 import type { ToolDef } from "./types";
 
 export const agentTools: ToolDef[] = [
@@ -21,6 +22,7 @@ export const agentTools: ToolDef[] = [
   updateTaskTool,
   createFolderTool,
   manageAgentTool,
+  searchKnowledgeBaseTool,
 ];
 
 export type { ToolDef, AgentContext } from "./types";
