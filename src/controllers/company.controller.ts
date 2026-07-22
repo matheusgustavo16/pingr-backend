@@ -7,6 +7,14 @@ import { ChatService } from "../services/chat.service";
 import { GitHubService } from "../services/github.service";
 import { IntegrationProvider, IntegrationStatus } from "@prisma/client";
 import { NotificationService } from "../services/notification.service";
+import { cacheGetJSON, cacheSetJSON } from "../services/cache/app-cache";
+
+// TTL curto de propósito: getMyCompany é compartilhado por todos os membros
+// da company (mesmo payload pra todo mundo), então cache por companyId ganha
+// muito em tráfego real sem ficar stale por muito tempo. Sem invalidação
+// ativa nos endpoints de mutation — TTL sozinho já é menor que o
+// staleTime (60s) do react-query no client.
+const MY_COMPANY_CACHE_TTL_SECONDS = 15;
 
 // O JWT_SECRET deve ser lido preferencialmente dentro das funções ou garantindo que o dotenv foi carregado
 const getSecret = () => process.env.JWT_SECRET || "";
@@ -139,8 +147,10 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Buscar empresa onde o usuário é membro ATIVO ou dono
-    const company = await prisma.company.findFirst({
+    // Passo barato: só resolve acesso (dono ou membro ATIVO) + companyId.
+    // Query enxuta (select id), sempre fresca — nunca cacheada, garante que
+    // revogação de acesso é respeitada a cada request.
+    const access = await prisma.company.findFirst({
       where: {
         OR: [
           { ownerId: userId },
@@ -154,6 +164,26 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
           },
         ],
       },
+      select: { id: true },
+    });
+
+    if (!access) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    const cacheKey = `mycompany:${access.id}`;
+    const cached = await cacheGetJSON<Record<string, unknown>>(cacheKey);
+    if (cached) {
+      return res.json({ company: cached });
+    }
+
+    // Payload pesado (rooms/categories/members/workspaces aninhados) é igual
+    // pra qualquer membro dessa company — cacheável e compartilhável entre
+    // usuários. relationLoadStrategy "join" colapsa os includes aninhados
+    // numa única query SQL (LATERAL JOIN) em vez de N queries sequenciais.
+    const company = await prisma.company.findUnique({
+      where: { id: access.id },
+      relationLoadStrategy: "join",
       include: {
         rooms: {
           include: { scheduledEvent: true },
@@ -192,35 +222,37 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    return res.json({
-      company: {
-        id: company.id,
-        title: company.title,
-        cnpj: company.cnpj,
-        picture: company.picture,
-        ownerId: company.ownerId,
-        createdAt: company.createdAt,
-        rooms: company.rooms,
-        decorations: company.decorations,
-        categories: company.categories,
-        workspaces: company.workspaces,
-        members: company.members
-          .filter((m) => m.status === "ACTIVE")
-          .map((m) => ({
-            id: m.id,
-            userId: m.userId,
-            role: m.role,
-            status: m.status,
-            user: {
-              id: m.user.id,
-              name: m.user.name,
-              email: m.user.email,
-              picture: m.user.picture,
-              lastSeenAt: m.user.lastSeenAt,
-            },
-          })),
-      },
-    });
+    const payload = {
+      id: company.id,
+      title: company.title,
+      cnpj: company.cnpj,
+      picture: company.picture,
+      ownerId: company.ownerId,
+      createdAt: company.createdAt,
+      rooms: company.rooms,
+      decorations: company.decorations,
+      categories: company.categories,
+      workspaces: company.workspaces,
+      members: company.members
+        .filter((m) => m.status === "ACTIVE")
+        .map((m) => ({
+          id: m.id,
+          userId: m.userId,
+          role: m.role,
+          status: m.status,
+          user: {
+            id: m.user.id,
+            name: m.user.name,
+            email: m.user.email,
+            picture: m.user.picture,
+            lastSeenAt: m.user.lastSeenAt,
+          },
+        })),
+    };
+
+    cacheSetJSON(cacheKey, payload, MY_COMPANY_CACHE_TTL_SECONDS).catch(() => {});
+
+    return res.json({ company: payload });
   } catch (error) {
     console.error("Erro ao buscar empresa:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
