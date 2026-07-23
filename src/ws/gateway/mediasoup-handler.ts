@@ -165,6 +165,13 @@ export const handleMediasoupEvents = async (
       });
     });
 
+    // DEBUG temporário — investigando relato de áudio não chegando entre
+    // peers (webcam ok, áudio não). Ver DEPLOY.md/histórico se ainda tiver
+    // esse log daqui uns dias: pode remover.
+    console.log(
+      `🔍 [audio-debug] GET_PRODUCERS user=${socket.user?.id} room=${data.roomId} -> ${roomProducers.length} producers (${roomProducers.map((p) => `${p.kind}:${p.userId}`).join(", ") || "nenhum"})`
+    );
+
     callback({ producers: roomProducers });
   });
 
@@ -268,6 +275,11 @@ export const handleMediasoupEvents = async (
         // Notificar outros na sala sobre o novo producer
         const roomId = (transport as any)._data?.roomId || data.appData?.roomId;
         if (roomId) {
+          // DEBUG temporário — ver comentário em MEDIASOUP_GET_PRODUCERS.
+          console.log(
+            `🔍 [audio-debug] NEW_PRODUCER kind=${producer.kind} user=${socket.user?.id} room=${roomId} producer=${producer.id}`
+          );
+
           socket.to(roomId).emit("NEW_PRODUCER", {
             producerId: producer.id,
             userId: socket.user?.id,
@@ -321,12 +333,19 @@ export const handleMediasoupEvents = async (
 
         const router = await manager.getOrCreateRouter(roomId as string);
 
-        if (
-          !router.canConsume({
-            producerId: data.producerId,
-            rtpCapabilities: data.rtpCapabilities,
-          })
-        ) {
+        const canConsume = router.canConsume({
+          producerId: data.producerId,
+          rtpCapabilities: data.rtpCapabilities,
+        });
+
+        // DEBUG temporário — ver comentário em MEDIASOUP_GET_PRODUCERS.
+        // canConsume=false pro áudio e true pro vídeo explicaria exatamente
+        // o sintoma relatado (webcam ok, ninguém se ouve).
+        console.log(
+          `🔍 [audio-debug] CONSUME kind=${targetProducer.kind} user=${socket.user?.id} producer=${data.producerId} canConsume=${canConsume}`
+        );
+
+        if (!canConsume) {
           throw new Error("Cannot consume");
         }
 
@@ -346,6 +365,7 @@ export const handleMediasoupEvents = async (
           rtpParameters: consumer.rtpParameters,
         });
       } catch (error: any) {
+        console.error(`🔍 [audio-debug] MEDIASOUP_CONSUME falhou: ${error.message}`);
         callback({ error: error.message });
       }
     }
@@ -360,8 +380,13 @@ export const handleMediasoupEvents = async (
         if (!consumer) throw new Error("Consumer not found");
 
         await consumer.resume();
+        // DEBUG temporário — ver comentário em MEDIASOUP_GET_PRODUCERS.
+        console.log(
+          `🔍 [audio-debug] RESUME_CONSUMER kind=${consumer.kind} user=${socket.user?.id} consumer=${consumer.id} paused=${consumer.paused}`
+        );
         callback({ success: true });
       } catch (error: any) {
+        console.error(`🔍 [audio-debug] MEDIASOUP_RESUME_CONSUMER falhou: ${error.message}`);
         callback({ error: error.message });
       }
     }
