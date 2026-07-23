@@ -56,6 +56,9 @@ else
 fi
 
 npx prisma migrate deploy
+# npm ci only regenerates the client via postinstall when it actually runs;
+# schema.prisma can change without the lockfile changing, so always regenerate.
+npx prisma generate
 
 # keep last 3 dist backups
 ls -dt dist.bak.* 2>/dev/null | tail -n +4 | xargs -r rm -rf
