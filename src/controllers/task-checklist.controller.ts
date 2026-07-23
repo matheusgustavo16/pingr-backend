@@ -2,7 +2,6 @@ import { Response } from "express";
 import { TaskActivityType } from "@prisma/client";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { emitTaskEvent, logActivity, requireTaskInCompany, TaskServiceError } from "../services/task.service";
 import {
   createChecklistItemSchema,
@@ -48,12 +47,12 @@ export const createChecklist = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
 
     const parsed = createChecklistSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -65,7 +64,7 @@ export const createChecklist = async (req: AuthRequest, res: Response) => {
       include: { items: true },
     });
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_CREATED", { taskId: task.id, checklist });
+    emitTaskEvent(companyId, "TASK_CHECKLIST_CREATED", { taskId: task.id, checklist });
 
     return res.status(201).json({ checklist });
   } catch (error) {
@@ -80,12 +79,12 @@ export const updateChecklist = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const checklist = await requireChecklistInCompany(req.params.id, company.id);
+    const checklist = await requireChecklistInCompany(req.params.id, companyId);
 
     const parsed = updateChecklistSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -101,7 +100,7 @@ export const updateChecklist = async (req: AuthRequest, res: Response) => {
       include: { items: true },
     });
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_UPDATED", { taskId: checklist.task.id, checklist: updated });
+    emitTaskEvent(companyId, "TASK_CHECKLIST_UPDATED", { taskId: checklist.task.id, checklist: updated });
 
     return res.json({ checklist: updated });
   } catch (error) {
@@ -116,16 +115,16 @@ export const deleteChecklist = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const checklist = await requireChecklistInCompany(req.params.id, company.id);
+    const checklist = await requireChecklistInCompany(req.params.id, companyId);
 
     await prisma.taskChecklist.delete({ where: { id: checklist.id } });
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_DELETED", { taskId: checklist.task.id, checklistId: checklist.id });
+    emitTaskEvent(companyId, "TASK_CHECKLIST_DELETED", { taskId: checklist.task.id, checklistId: checklist.id });
 
     return res.json({ message: "Checklist removida com sucesso" });
   } catch (error) {
@@ -140,12 +139,12 @@ export const createChecklistItem = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const checklist = await requireChecklistInCompany(req.params.id, company.id);
+    const checklist = await requireChecklistInCompany(req.params.id, companyId);
 
     const parsed = createChecklistItemSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -156,7 +155,7 @@ export const createChecklistItem = async (req: AuthRequest, res: Response) => {
       data: { checklistId: checklist.id, title: parsed.data.title, order: parsed.data.order ?? 0 },
     });
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_ITEM_CREATED", { taskId: checklist.task.id, item });
+    emitTaskEvent(companyId, "TASK_CHECKLIST_ITEM_CREATED", { taskId: checklist.task.id, item });
 
     return res.status(201).json({ item });
   } catch (error) {
@@ -171,12 +170,12 @@ export const updateChecklistItem = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const item = await requireChecklistItemInCompany(req.params.id, company.id);
+    const item = await requireChecklistItemInCompany(req.params.id, companyId);
 
     const parsed = updateChecklistItemSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -205,7 +204,7 @@ export const updateChecklistItem = async (req: AuthRequest, res: Response) => {
       );
     }
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_ITEM_UPDATED", { taskId, item: updated });
+    emitTaskEvent(companyId, "TASK_CHECKLIST_ITEM_UPDATED", { taskId, item: updated });
 
     return res.json({ item: updated });
   } catch (error) {
@@ -220,16 +219,16 @@ export const deleteChecklistItem = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const item = await requireChecklistItemInCompany(req.params.id, company.id);
+    const item = await requireChecklistItemInCompany(req.params.id, companyId);
 
     await prisma.taskChecklistItem.delete({ where: { id: item.id } });
 
-    emitTaskEvent(company.id, "TASK_CHECKLIST_ITEM_DELETED", {
+    emitTaskEvent(companyId, "TASK_CHECKLIST_ITEM_DELETED", {
       taskId: item.checklist.task.id,
       itemId: item.id,
     });

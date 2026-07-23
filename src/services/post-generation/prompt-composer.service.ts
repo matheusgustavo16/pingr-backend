@@ -6,9 +6,15 @@ REGRA MAIS IMPORTANTE, acima de qualquer outra — copy e texto na arte:
 Se o pedido do usuário OU qualquer material de referência (documento anexado, template) especificar explicitamente qual texto/copy deve aparecer na imagem — frases, título, chamada, e/ou indicação de posição/tipografia — você é OBRIGADO a usar esse texto exatamente como especificado, palavra por palavra, sem parafrasear, resumir, traduzir ou reescrever, mesmo que o texto pareça longo ou repetitivo. Nunca invente uma copy nova quando já existe uma definida em algum lugar. Só crie um texto original se, depois de checar o pedido e TODAS as referências, nada especificar um texto exato pra imagem. Quando o material de referência contiver múltiplas opções de post (ex: "Post 1", "Post 2", "Post 3"...), identifique no pedido do usuário qual delas foi escolhida e use o texto exato só dessa opção — não misture textos de opções diferentes.
 
 Regras rígidas sobre o formato da resposta:
-- Responda APENAS com o prompt final, em texto corrido (1 a 2 parágrafos). Sem markdown, sem títulos, sem listas numeradas, sem aspas envolvendo o texto todo, sem comentários tipo "aqui está o prompt" ou "baseado no documento anexado".
-- Nunca cite ou mencione os documentos/templates de referência como fonte ("o documento diz", "conforme a referência", "o anexo menciona") — absorva o conteúdo e o estilo deles na própria descrição visual, como se você já soubesse aquilo. A única exceção é o texto exato que vai NA imagem, que deve ser reproduzido literalmente entre aspas.
-- Escreva em português, mesmo que o texto que vai aparecer NA imagem seja em outro idioma.
+- O prompt final (a descrição visual/técnica) deve ser escrito em INGLÊS — é o idioma que os modelos de geração de imagem (Nano Banana/Replicate) entendem melhor. A ÚNICA exceção é o texto/copy que vai aparecer NA imagem (item 6): esse continua sempre no idioma original em que foi especificado (normalmente português) e NUNCA deve ser traduzido — reproduza-o literalmente entre aspas, igual no português quanto no inglês.
+- Sem markdown, sem títulos, sem listas numeradas, sem aspas envolvendo o texto todo, sem comentários tipo "here's the prompt" ou "based on the attached document".
+- Nunca cite ou mencione os documentos/templates de referência como fonte ("o documento diz", "conforme a referência", "o anexo menciona") — absorva o conteúdo e o estilo deles na própria descrição visual, como se você já soubesse aquilo.
+- Depois de escrever o prompt em inglês, produza também uma tradução completa dele pro português — mesma estrutura e conteúdo, só a descrição traduzida; os textos entre aspas (a copy que vai NA imagem) permanecem IDÊNTICOS, sem tradução, nas duas versões.
+- Responda EXATAMENTE nesse formato, sem nenhum texto antes ou depois dos blocos:
+[EN]
+<prompt final em inglês, 1 a 2 parágrafos>
+[PT]
+<mesmo prompt traduzido pra português, 1 a 2 parágrafos>
 
 Os itens 1 a 3 abaixo são OBRIGATÓRIOS e precisam de valores numéricos concretos — nunca descreva de forma vaga ("boa iluminação", "câmera profissional"). Se o pedido/referências não determinarem um valor, escolha você mesmo um valor específico coerente com o clima da peça, mas sempre escreva um número/nome concreto:
 1. Formato e enquadramento: proporção exata + dimensão em pixels (ex: quadrado 1:1 1080x1080, retrato 4:5 1080x1350, vertical 9:16 1080x1920 — escolha pelo formato do post informado: post único/carrossel geralmente quadrado ou 4:5, stories/vídeo geralmente 9:16), margem de segurança em % nas bordas onde houver texto, posicionamento do(s) elemento(s) principal(is) pela regra dos terços.
@@ -51,7 +57,30 @@ function buildSystemPrompt(agent?: ComposerAgent | null): string {
  * que foi lido. Sem `agent`, segue a ordem padrão da Pingr (DeepSeek -> OpenAI
  * -> Anthropic); com `agent`, força o provider/model configurados nele.
  */
-export async function composeImagePrompt({ userRequest, referenceNotes, agent }: ComposeImagePromptInput): Promise<string> {
+export interface ComposedImagePrompt {
+  /** Descrição em inglês — é essa versão que efetivamente vai pro Replicate. */
+  promptEn: string;
+  /** Tradução em português, só pro usuário revisar/entender no modal de confirmação. */
+  promptPt: string;
+}
+
+/** Separa a resposta do LLM nos blocos [EN]/[PT]. Se o modelo não seguir o formato
+ *  (raro, mas modelos mais fracos às vezes ignoram instrução de formato), cai de
+ *  volta pro texto bruto inteiro nos dois campos em vez de quebrar a geração. */
+function splitComposedPrompt(raw: string): ComposedImagePrompt {
+  const match = raw.match(/\[EN\]\s*([\s\S]*?)\s*\[PT\]\s*([\s\S]*)/i);
+  if (!match) {
+    const fallback = raw.trim();
+    return { promptEn: fallback, promptPt: fallback };
+  }
+  return { promptEn: match[1].trim(), promptPt: match[2].trim() };
+}
+
+export async function composeImagePrompt({
+  userRequest,
+  referenceNotes,
+  agent,
+}: ComposeImagePromptInput): Promise<ComposedImagePrompt> {
   const hasReferences = referenceNotes.length > 0;
   const referencesBlock = hasReferences
     ? `\n\nMaterial de referência levantado (use como matéria-prima, não cite como fonte):\n${referenceNotes.map((n) => `- ${n}`).join("\n")}`
@@ -72,5 +101,5 @@ export async function composeImagePrompt({ userRequest, referenceNotes, agent }:
     ? await runTextCompletionWithProvider(agent.provider, agent.model, systemPrompt, userPrompt, 2000)
     : await runTextCompletion(systemPrompt, userPrompt, 2000);
 
-  return text;
+  return splitComposedPrompt(text);
 }

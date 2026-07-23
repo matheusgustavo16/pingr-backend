@@ -2,7 +2,6 @@ import { Response } from "express";
 import { TaskActivityType } from "@prisma/client";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { deleteFile, getSignedDeliveryUrl, uploadFile } from "../services/cloudinary.service";
 import { ensureTaskAttachmentsFolder } from "../services/document.service";
 import { emitTaskEvent, logActivity, requireTaskInCompany, TaskServiceError } from "../services/task.service";
@@ -40,21 +39,21 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Nenhum arquivo enviado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
 
     const uploadResult = await uploadFile(
       req.file.buffer,
-      `task-attachments/${company.id}`,
+      `task-attachments/${companyId}`,
       req.file.originalname,
       req.file.mimetype
     );
 
-    const folder = await ensureTaskAttachmentsFolder(company.id, userId);
+    const folder = await ensureTaskAttachmentsFolder(companyId, userId);
 
     const attachment = await prisma.$transaction(async (tx) => {
       const created = await tx.taskAttachment.create({
@@ -78,7 +77,7 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
           publicId: created.publicId,
           fileType: created.fileType,
           fileSize: created.fileSize,
-          companyId: company.id,
+          companyId: companyId,
           workspaceId: task.workspaceId,
           folderId: folder.id,
           uploadedById: userId,
@@ -104,7 +103,7 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
       }),
     };
 
-    emitTaskEvent(company.id, "TASK_ATTACHMENT_CREATED", { taskId: task.id, attachment: attachmentWithSignedUrl });
+    emitTaskEvent(companyId, "TASK_ATTACHMENT_CREATED", { taskId: task.id, attachment: attachmentWithSignedUrl });
 
     return res.status(201).json({ attachment: attachmentWithSignedUrl });
   } catch (error) {
@@ -119,12 +118,12 @@ export const deleteAttachment = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const attachment = await requireAttachmentInCompany(req.params.id, company.id);
+    const attachment = await requireAttachmentInCompany(req.params.id, companyId);
 
     try {
       await deleteFile(attachment.publicId, attachment.fileType ?? undefined);
@@ -135,7 +134,7 @@ export const deleteAttachment = async (req: AuthRequest, res: Response) => {
     // Cascade remove o Document espelhado (FK onDelete: Cascade).
     await prisma.taskAttachment.delete({ where: { id: attachment.id } });
 
-    emitTaskEvent(company.id, "TASK_ATTACHMENT_DELETED", {
+    emitTaskEvent(companyId, "TASK_ATTACHMENT_DELETED", {
       taskId: attachment.task.id,
       attachmentId: attachment.id,
     });

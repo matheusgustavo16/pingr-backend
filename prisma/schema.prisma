@@ -16,6 +16,8 @@ model User {
   email       String     @unique
   password    String?
   picture     String?
+  bio         String?    @db.VarChar(280)
+  phone       String?
   googleId    String?    @unique
   githubId    String?    @unique
   status      UserStatus @default(AVAILABLE)

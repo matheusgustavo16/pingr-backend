@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { deleteFile, getSignedDeliveryUrl } from "../services/cloudinary.service";
 import {
   assertNotDescendant,
@@ -27,8 +26,8 @@ export const listFolderContents = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -38,20 +37,20 @@ export const listFolderContents = async (req: AuthRequest, res: Response) => {
     let currentFolder = null;
     let breadcrumb: { id: string; title: string }[] = [];
     if (folderId) {
-      currentFolder = await requireFolderInCompany(folderId, company.id);
-      breadcrumb = await getBreadcrumb(folderId, company.id);
+      currentFolder = await requireFolderInCompany(folderId, companyId);
+      breadcrumb = await getBreadcrumb(folderId, companyId);
     }
 
     const scopeFilter = workspaceId ? { workspaceId } : {};
 
     const [folders, documents] = await Promise.all([
       prisma.folder.findMany({
-        where: { companyId: company.id, parentId: folderId, ...scopeFilter },
+        where: { companyId: companyId, parentId: folderId, ...scopeFilter },
         include: { _count: { select: { documents: true, children: true } } },
         orderBy: { title: "asc" },
       }),
       prisma.document.findMany({
-        where: { companyId: company.id, folderId, ...scopeFilter },
+        where: { companyId: companyId, folderId, ...scopeFilter },
         orderBy: { createdAt: "desc" },
       }),
     ]);
@@ -79,15 +78,15 @@ export const listFolderTree = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
     const workspaceId = typeof req.query.workspaceId === "string" ? req.query.workspaceId : undefined;
 
     const folders = await prisma.folder.findMany({
-      where: { companyId: company.id, ...(workspaceId ? { workspaceId } : {}) },
+      where: { companyId: companyId, ...(workspaceId ? { workspaceId } : {}) },
       select: { id: true, title: true, parentId: true, workspaceId: true },
       orderBy: { title: "asc" },
     });
@@ -105,8 +104,8 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -118,10 +117,10 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
 
     let workspaceId: string | null = data.workspaceId ?? null;
     if (data.parentId) {
-      const parent = await requireFolderInCompany(data.parentId, company.id);
+      const parent = await requireFolderInCompany(data.parentId, companyId);
       workspaceId = parent.workspaceId;
     } else if (workspaceId) {
-      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, companyId: company.id } });
+      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, companyId: companyId } });
       if (!workspace) {
         return res.status(400).json({ error: "Workspace inválida" });
       }
@@ -132,7 +131,7 @@ export const createFolder = async (req: AuthRequest, res: Response) => {
         title: data.title,
         parentId: data.parentId ?? null,
         workspaceId,
-        companyId: company.id,
+        companyId: companyId,
         createdById: userId,
       },
     });
@@ -150,12 +149,12 @@ export const updateFolder = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const folder = await requireFolderInCompany(req.params.id, company.id);
+    const folder = await requireFolderInCompany(req.params.id, companyId);
 
     const parsed = updateFolderSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -167,8 +166,8 @@ export const updateFolder = async (req: AuthRequest, res: Response) => {
     if (data.parentId !== undefined) {
       parentId = data.parentId;
       if (parentId) {
-        const targetParent = await requireFolderInCompany(parentId, company.id);
-        await assertNotDescendant(folder.id, parentId, company.id);
+        const targetParent = await requireFolderInCompany(parentId, companyId);
+        await assertNotDescendant(folder.id, parentId, companyId);
         if (targetParent.workspaceId !== folder.workspaceId) {
           throw new DocumentServiceError(
             "Não é possível mover uma pasta entre a empresa e um workspace diferente",
@@ -204,14 +203,14 @@ export const deleteFolder = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const folder = await requireFolderInCompany(req.params.id, company.id);
+    const folder = await requireFolderInCompany(req.params.id, companyId);
 
-    const subtreeIds = await collectFolderSubtreeIds(folder.id, company.id);
+    const subtreeIds = await collectFolderSubtreeIds(folder.id, companyId);
     const documents = await prisma.document.findMany({
       where: { folderId: { in: subtreeIds } },
       select: { publicId: true, fileType: true },

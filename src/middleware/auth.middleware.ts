@@ -1,11 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../services/prisma.service";
+import { getActiveCompanyForUser } from "../services/company.service";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
 export interface AuthRequest extends Request {
   userId?: string;
+  companyId?: string | null;
   user?: {
     id: string;
     name: string;
@@ -48,7 +50,10 @@ export const authenticate = async (
       return;
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token, JWT_SECRET) as {
+      userId: string;
+      companyId?: string | null;
+    };
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },
@@ -73,7 +78,13 @@ export const authenticate = async (
       return;
     }
 
+    const activeCompany = await getActiveCompanyForUser(
+      user.id,
+      decoded.companyId
+    );
+
     req.userId = user.id;
+    req.companyId = activeCompany?.id ?? null;
     req.user = user;
     next();
   } catch (error) {

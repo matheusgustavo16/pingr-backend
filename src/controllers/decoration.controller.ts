@@ -1,21 +1,19 @@
 import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { WebSocketServer } from "../ws/socket-server";
 
 // Decorações são puramente visuais (planta etc) — só admin/dono do mapa
 // pode criar/mover, mesma regra do "modo editor" das salas.
-async function requireCompanyAdmin(userId: string) {
-  const company = await resolveUserCompany(userId);
-  if (!company) return { company: null, isAdmin: false };
+async function requireCompanyAdmin(userId: string, companyId: string | null | undefined) {
+  if (!companyId) return { companyId: null, isAdmin: false };
 
   const requester = await prisma.companyMember.findUnique({
-    where: { userId_companyId: { userId, companyId: company.id } },
+    where: { userId_companyId: { userId, companyId } },
   });
 
   const isAdmin = !!requester && (requester.role === "OWNER" || requester.role === "ADMIN");
-  return { company, isAdmin };
+  return { companyId, isAdmin };
 }
 
 export const createDecoration = async (req: AuthRequest, res: Response) => {
@@ -35,9 +33,9 @@ export const createDecoration = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Escala inválida" });
     }
 
-    const { company, isAdmin } = await requireCompanyAdmin(userId);
+    const { companyId, isAdmin } = await requireCompanyAdmin(userId, req.companyId);
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
@@ -53,14 +51,14 @@ export const createDecoration = async (req: AuthRequest, res: Response) => {
         x,
         y,
         scale: scale === 2 ? 2 : 1,
-        companyId: company.id,
+        companyId,
       },
     });
 
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("DECORATION_CREATED", { decoration });
     } catch (error) {
       console.error("Erro ao emitir DECORATION_CREATED via socket:", error);
@@ -87,9 +85,9 @@ export const updateDecorationPosition = async (req: AuthRequest, res: Response) 
       return res.status(400).json({ error: "Posição inválida" });
     }
 
-    const { company, isAdmin } = await requireCompanyAdmin(userId);
+    const { companyId, isAdmin } = await requireCompanyAdmin(userId, req.companyId);
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
@@ -100,7 +98,7 @@ export const updateDecorationPosition = async (req: AuthRequest, res: Response) 
     }
 
     const decoration = await prisma.officeDecoration.findFirst({
-      where: { id, companyId: company.id },
+      where: { id, companyId: companyId },
     });
 
     if (!decoration) {
@@ -115,7 +113,7 @@ export const updateDecorationPosition = async (req: AuthRequest, res: Response) 
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("DECORATION_POSITION_UPDATED", { id: updated.id, x: updated.x, y: updated.y });
     } catch (error) {
       console.error("Erro ao emitir DECORATION_POSITION_UPDATED via socket:", error);
@@ -142,9 +140,9 @@ export const updateDecorationScale = async (req: AuthRequest, res: Response) => 
       return res.status(400).json({ error: "Escala inválida" });
     }
 
-    const { company, isAdmin } = await requireCompanyAdmin(userId);
+    const { companyId, isAdmin } = await requireCompanyAdmin(userId, req.companyId);
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
@@ -155,7 +153,7 @@ export const updateDecorationScale = async (req: AuthRequest, res: Response) => 
     }
 
     const decoration = await prisma.officeDecoration.findFirst({
-      where: { id, companyId: company.id },
+      where: { id, companyId: companyId },
     });
 
     if (!decoration) {
@@ -170,7 +168,7 @@ export const updateDecorationScale = async (req: AuthRequest, res: Response) => 
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("DECORATION_SCALE_UPDATED", { id: updated.id, scale: updated.scale });
     } catch (error) {
       console.error("Erro ao emitir DECORATION_SCALE_UPDATED via socket:", error);
@@ -192,9 +190,9 @@ export const deleteDecoration = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const { company, isAdmin } = await requireCompanyAdmin(userId);
+    const { companyId, isAdmin } = await requireCompanyAdmin(userId, req.companyId);
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
@@ -205,7 +203,7 @@ export const deleteDecoration = async (req: AuthRequest, res: Response) => {
     }
 
     const decoration = await prisma.officeDecoration.findFirst({
-      where: { id, companyId: company.id },
+      where: { id, companyId: companyId },
     });
 
     if (!decoration) {
@@ -217,7 +215,7 @@ export const deleteDecoration = async (req: AuthRequest, res: Response) => {
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("DECORATION_DELETED", { id: decoration.id });
     } catch (error) {
       console.error("Erro ao emitir DECORATION_DELETED via socket:", error);

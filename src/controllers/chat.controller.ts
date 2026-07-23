@@ -13,6 +13,7 @@ import { WebSocketServer } from "../ws/socket-server";
 import { prisma } from "../services/prisma.service";
 import { LinkPreviewService } from "../services/link-preview.service";
 import { maybeTriggerAgentMention } from "../services/agent/chat-mention.service";
+import { notifyMentionedUsers } from "../services/chat/user-mention.service";
 
 /**
  * Lista mensagens de um canal (paginado)
@@ -109,6 +110,19 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
         if (!botId) {
           void maybeTriggerAgentMention({ io, channel, content, userId }).catch((error) => {
             console.error("Erro ao acionar agente mencionado no chat:", error);
+          });
+
+          // "@NomeDoUsuário" dispara um toast em tempo real pra quem foi
+          // marcado (se estiver online) — não bloqueia a resposta deste request.
+          void notifyMentionedUsers({
+            io,
+            channel,
+            content,
+            messageId: message.id,
+            authorId: userId,
+            authorName: message.author?.name || "Alguém",
+          }).catch((error) => {
+            console.error("Erro ao notificar usuário mencionado no chat:", error);
           });
         }
       }

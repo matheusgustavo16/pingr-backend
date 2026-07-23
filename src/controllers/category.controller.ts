@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 
 export const createCategory = async (req: AuthRequest, res: Response) => {
   try {
@@ -12,10 +11,10 @@ export const createCategory = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Buscar a empresa do usuário (Dono ou membro ativo)
-    const company = await resolveUserCompany(userId);
+    // Empresa ativa da sessão (já validada pelo middleware de autenticação)
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
@@ -33,7 +32,7 @@ export const createCategory = async (req: AuthRequest, res: Response) => {
       const workspace = await prisma.workspace.findFirst({
         where: {
           id: workspaceId,
-          companyId: company.id,
+          companyId: companyId,
         },
       });
       if (workspace) {
@@ -46,7 +45,7 @@ export const createCategory = async (req: AuthRequest, res: Response) => {
       data: {
         title: title.trim(),
         emoji: emoji || "📁",
-        companyId: company.id,
+        companyId: companyId,
         workspaceId: validWorkspaceId,
       },
     });

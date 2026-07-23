@@ -2,7 +2,6 @@ import { Response } from "express";
 import { TaskActivityType } from "@prisma/client";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import {
   emitTaskEvent,
   logActivity,
@@ -40,12 +39,12 @@ export const listComments = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
 
     const comments = await prisma.taskComment.findMany({
       where: { taskId: task.id, isDeleted: false },
@@ -66,12 +65,12 @@ export const createComment = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
 
     const parsed = createCommentSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -106,7 +105,7 @@ export const createComment = async (req: AuthRequest, res: Response) => {
       void notifyTaskEvent("MENTION", task, userId, mentionedUserIds);
     }
 
-    emitTaskEvent(company.id, "TASK_COMMENT_CREATED", { taskId: task.id, comment });
+    emitTaskEvent(companyId, "TASK_COMMENT_CREATED", { taskId: task.id, comment });
 
     return res.status(201).json({ comment });
   } catch (error) {
@@ -121,12 +120,12 @@ export const updateComment = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const comment = await requireCommentInCompany(req.params.id, company.id);
+    const comment = await requireCommentInCompany(req.params.id, companyId);
 
     if (comment.authorId !== userId) {
       return res.status(403).json({ error: "Apenas o autor pode editar o comentário" });
@@ -143,7 +142,7 @@ export const updateComment = async (req: AuthRequest, res: Response) => {
       include: { author: { select: COMMENT_AUTHOR_SELECT } },
     });
 
-    emitTaskEvent(company.id, "TASK_COMMENT_UPDATED", { taskId: comment.task.id, comment: updated });
+    emitTaskEvent(companyId, "TASK_COMMENT_UPDATED", { taskId: comment.task.id, comment: updated });
 
     return res.json({ comment: updated });
   } catch (error) {
@@ -158,12 +157,12 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const comment = await requireCommentInCompany(req.params.id, company.id);
+    const comment = await requireCommentInCompany(req.params.id, companyId);
 
     if (comment.authorId !== userId) {
       return res.status(403).json({ error: "Apenas o autor pode remover o comentário" });
@@ -174,7 +173,7 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
       data: { isDeleted: true },
     });
 
-    emitTaskEvent(company.id, "TASK_COMMENT_DELETED", { taskId: comment.task.id, commentId: comment.id });
+    emitTaskEvent(companyId, "TASK_COMMENT_DELETED", { taskId: comment.task.id, commentId: comment.id });
 
     return res.json({ message: "Comentário removido com sucesso" });
   } catch (error) {

@@ -4,6 +4,7 @@ import {
   assertValidRecurrenceRule,
   expandOccurrences,
   occurrenceId,
+  resolveRelevantOccurrence,
 } from "./schedule-recurrence.util";
 
 export interface CreateScheduleEventData {
@@ -413,6 +414,47 @@ export class ScheduleService {
       return null;
     }
 
-    return room.scheduledEvent;
+    const event = room.scheduledEvent;
+    if (!event.isRecurring || !event.recurrenceRule) {
+      return event;
+    }
+
+    // Série recorrente: startAt/endAt do mestre são só a 1ª ocorrência — sem
+    // isso, a 2ª semana em diante sempre aparecia como "já encerrada" (ver
+    // resolveRelevantOccurrence). Resolve qual ocorrência (em andamento,
+    // próxima ou última passada, se a série já acabou) é relevante agora.
+    const now = new Date();
+    const exceptions = await prisma.eventException.findMany({ where: { eventId: event.id } });
+    const exceptionByTime = new Map(exceptions.map((e) => [e.occurrenceDate.getTime(), e]));
+
+    const recurrenceInput = {
+      startAt: event.startAt,
+      endAt: event.endAt,
+      recurrenceRule: event.recurrenceRule,
+      recurrenceUntil: event.recurrenceUntil,
+    };
+
+    let resolved = resolveRelevantOccurrence(recurrenceInput, now);
+
+    // Ocorrência resolvida caiu numa data cancelada — tenta a ocorrência
+    // seguinte (cobre o caso comum de uma exceção pontual isolada).
+    if (resolved && exceptionByTime.get(resolved.occurrenceDate.getTime())?.action === "CANCELLED") {
+      resolved = resolveRelevantOccurrence(recurrenceInput, new Date(resolved.endAt.getTime() + 1));
+    }
+
+    if (!resolved) {
+      return event;
+    }
+
+    const exception = exceptionByTime.get(resolved.occurrenceDate.getTime());
+    const payload =
+      (exception?.action === "MODIFIED" ? (exception.payload as Record<string, unknown> | null) : null) ?? {};
+
+    return {
+      ...event,
+      startAt: typeof payload.startAt === "string" ? new Date(payload.startAt) : resolved.startAt,
+      endAt: typeof payload.endAt === "string" ? new Date(payload.endAt) : resolved.endAt,
+      title: typeof payload.title === "string" ? payload.title : event.title,
+    };
   }
 }

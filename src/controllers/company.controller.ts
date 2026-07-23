@@ -10,8 +10,33 @@ import { EmailService } from "../services/email.service";
 import { IntegrationProvider, IntegrationStatus } from "@prisma/client";
 import { NotificationService } from "../services/notification.service";
 import { cacheGetJSON, cacheSetJSON } from "../services/cache/app-cache";
+import { listUserCompanies, isUserInCompany } from "../services/company.service";
 
 const INVITE_EXPIRATION_DAYS = 7;
+
+const COMPANY_SECTOR_OPTIONS = [
+  "Tecnologia",
+  "Saúde",
+  "Educação",
+  "Finanças",
+  "Varejo e Comércio",
+  "Indústria",
+  "Agronegócio",
+  "Construção Civil",
+  "Alimentação",
+  "Turismo e Hospitalidade",
+  "Transporte e Logística",
+  "Marketing e Publicidade",
+  "Jurídico",
+  "Consultoria",
+  "Imobiliário",
+  "Energia",
+  "Telecomunicações",
+  "Entretenimento",
+  "ONG e Terceiro Setor",
+  "Governo e Setor Público",
+  "Outro",
+];
 
 // TTL curto de propósito: getMyCompany é compartilhado por todos os membros
 // da company (mesmo payload pra todo mundo), então cache por companyId ganha
@@ -151,31 +176,15 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Passo barato: só resolve acesso (dono ou membro ATIVO) + companyId.
-    // Query enxuta (select id), sempre fresca — nunca cacheada, garante que
-    // revogação de acesso é respeitada a cada request.
-    const access = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          {
-            members: {
-              some: {
-                userId,
-                status: "ACTIVE", // Apenas membros ativos podem acessar o dashboard
-              },
-            },
-          },
-        ],
-      },
-      select: { id: true },
-    });
+    // Empresa ativa já resolvida e revalidada (dono ou membro ATIVO) pelo
+    // middleware de autenticação a cada request — não precisa reconsultar aqui.
+    const companyId = req.companyId;
 
-    if (!access) {
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const cacheKey = `mycompany:${access.id}`;
+    const cacheKey = `mycompany:${companyId}`;
     const cached = await cacheGetJSON<Record<string, unknown>>(cacheKey);
     if (cached) {
       return res.json({ company: cached });
@@ -186,7 +195,7 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
     // usuários. relationLoadStrategy "join" colapsa os includes aninhados
     // numa única query SQL (LATERAL JOIN) em vez de N queries sequenciais.
     const company = await prisma.company.findUnique({
-      where: { id: access.id },
+      where: { id: companyId },
       relationLoadStrategy: "join",
       include: {
         rooms: {
@@ -296,25 +305,10 @@ export const createWorkspace = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Emoji do projeto é obrigatório" });
     }
 
-    // Buscar empresa onde o usuário é membro ATIVO ou dono
-    const company = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          {
-            members: {
-              some: {
-                userId,
-                status: "ACTIVE",
-              },
-            },
-          },
-        ],
-      },
-      select: { id: true, title: true },
-    });
+    // Empresa ativa já resolvida e revalidada pelo middleware de autenticação
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -342,7 +336,7 @@ export const createWorkspace = async (req: AuthRequest, res: Response) => {
         data: {
           title: title.trim(),
           emoji: emoji.trim(),
-          companyId: company.id,
+          companyId,
           githubRepoId: githubRepoId || null,
           githubRepoName: githubRepoName || null,
           githubRepoFullName: githubRepoFullName || null,
@@ -355,7 +349,7 @@ export const createWorkspace = async (req: AuthRequest, res: Response) => {
         data: {
           title: "Notificações",
           emoji: "🔔",
-          companyId: company.id,
+          companyId,
           workspaceId: workspace.id,
         },
       });
@@ -364,7 +358,7 @@ export const createWorkspace = async (req: AuthRequest, res: Response) => {
       const room = await tx.room.create({
         data: {
           title: "Atualizações",
-          companyId: company.id,
+          companyId,
           type: "CHAT",
           categoryId: category.id,
           workspaceId: workspace.id,
@@ -432,24 +426,9 @@ export const updateWorkspace = async (req: AuthRequest, res: Response) => {
     }
 
     // Buscar empresa onde o usuário é membro ATIVO ou dono
-    const company = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          {
-            members: {
-              some: {
-                userId,
-                status: "ACTIVE",
-              },
-            },
-          },
-        ],
-      },
-      select: { id: true },
-    });
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -457,7 +436,7 @@ export const updateWorkspace = async (req: AuthRequest, res: Response) => {
     const workspace = await prisma.workspace.findFirst({
       where: {
         id: workspaceId,
-        companyId: company.id,
+        companyId,
       },
     });
 
@@ -494,25 +473,9 @@ export const deleteWorkspace = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "ID da workspace é obrigatório" });
     }
 
-    // Buscar empresa onde o usuário é membro ATIVO ou dono
-    const company = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          {
-            members: {
-              some: {
-                userId,
-                status: "ACTIVE",
-              },
-            },
-          },
-        ],
-      },
-      select: { id: true },
-    });
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -520,7 +483,7 @@ export const deleteWorkspace = async (req: AuthRequest, res: Response) => {
     const workspace = await prisma.workspace.findFirst({
       where: {
         id: workspaceId,
-        companyId: company.id,
+        companyId,
       },
       include: {
         rooms: {
@@ -659,13 +622,14 @@ export const inviteMembers = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Informe ao menos um e-mail" });
     }
 
-    const company = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          { members: { some: { userId, status: "ACTIVE" } } },
-        ],
-      },
+    const companyId = req.companyId;
+
+    if (!companyId) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
       select: { id: true, title: true, picture: true },
     });
 
@@ -1125,8 +1089,8 @@ export const updateCompany = async (req: AuthRequest, res: Response) => {
 
     if (sector !== undefined) {
       const trimmed = sector === null ? null : String(sector).trim();
-      if (trimmed && trimmed.length > 100) {
-        return res.status(400).json({ error: "Setor deve ter no máximo 100 caracteres" });
+      if (trimmed && !COMPANY_SECTOR_OPTIONS.includes(trimmed)) {
+        return res.status(400).json({ error: "Setor inválido" });
       }
       updateData.sector = trimmed || null;
     }
@@ -1164,21 +1128,15 @@ export const leaveCompany = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Buscar empresa do usuário
-    const company = await prisma.company.findFirst({
-      where: {
-        OR: [
-          { ownerId: userId },
-          {
-            members: {
-              some: {
-                userId,
-                status: "ACTIVE",
-              },
-            },
-          },
-        ],
-      },
+    const companyId = req.companyId;
+
+    if (!companyId) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      select: { id: true, ownerId: true },
     });
 
     if (!company) {
@@ -1277,6 +1235,74 @@ export const uploadCompanyLogo = async (req: AuthRequest, res: Response) => {
     });
   } catch (error) {
     console.error("Erro ao fazer upload do logo:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Lista as empresas do usuário autenticado (dono ou membro ativo),
+ * marcando qual delas é a empresa ativa da sessão atual.
+ */
+export const listCompanies = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const companies = await listUserCompanies(userId);
+
+    return res.json({
+      companies: companies.map((company) => ({
+        ...company,
+        active: company.id === req.companyId,
+      })),
+    });
+  } catch (error) {
+    console.error("Erro ao listar empresas:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Troca a empresa ativa da sessão: valida que o usuário é dono/membro ativo
+ * da empresa alvo e reemite o JWT com a nova claim `companyId`.
+ */
+export const switchCompany = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { companyId } = req.body as { companyId?: string };
+    if (!companyId) {
+      return res.status(400).json({ error: "companyId é obrigatório" });
+    }
+
+    const company = await isUserInCompany(userId, companyId);
+    if (!company) {
+      return res
+        .status(403)
+        .json({ error: "Você não pertence a esta empresa" });
+    }
+
+    const secret = getSecret();
+    if (!secret) {
+      console.error("JWT_SECRET não configurado");
+      return res.status(500).json({ error: "Erro de configuração do servidor" });
+    }
+
+    const token = jwt.sign({ userId, companyId: company.id }, secret, {
+      expiresIn: "7d",
+    });
+
+    return res.json({
+      token,
+      company: { id: company.id, title: company.title, picture: company.picture },
+    });
+  } catch (error) {
+    console.error("Erro ao trocar de empresa:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

@@ -2,7 +2,6 @@ import { Response } from "express";
 import { AgentKind, PostAssetJobStatus } from "@prisma/client";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { prisma } from "../services/prisma.service";
-import { resolveUserCompany } from "../services/company.service";
 import { deleteFile, getSignedDeliveryUrl, uploadFile } from "../services/cloudinary.service";
 import { ensurePostGeneratorTemplatesFolder } from "../services/document.service";
 import { postTemplateService } from "../services/post-template/post-template.service";
@@ -50,11 +49,11 @@ export const listTemplates = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const templates = await prisma.postTemplate.findMany({
-      where: { companyId: company.id },
+      where: { companyId: companyId },
       orderBy: { createdAt: "desc" },
     });
 
@@ -74,21 +73,21 @@ export const uploadTemplate = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Apenas arquivos de imagem são permitidos" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
-    const folder = await ensurePostGeneratorTemplatesFolder(company.id, userId);
+    const folder = await ensurePostGeneratorTemplatesFolder(companyId, userId);
 
     const uploadResult = await uploadFile(
       req.file.buffer,
-      `post-templates/${company.id}`,
+      `post-templates/${companyId}`,
       req.file.originalname,
       req.file.mimetype
     );
 
     const template = await prisma.postTemplate.create({
       data: {
-        companyId: company.id,
+        companyId: companyId,
         createdById: userId,
         fileName: req.file.originalname,
         fileUrl: uploadResult.url,
@@ -102,7 +101,7 @@ export const uploadTemplate = async (req: AuthRequest, res: Response) => {
             fileType: req.file.mimetype,
             fileSize: req.file.size,
             folderId: folder.id,
-            companyId: company.id,
+            companyId: companyId,
             uploadedById: userId,
           },
         },
@@ -124,11 +123,11 @@ export const deleteTemplate = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const template = await prisma.postTemplate.findFirst({
-      where: { id: req.params.id, companyId: company.id },
+      where: { id: req.params.id, companyId: companyId },
     });
     if (!template) return res.status(404).json({ error: "Template não encontrado" });
 
@@ -154,14 +153,14 @@ export const listGenerations = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
 
     const generations = await prisma.postGeneration.findMany({
-      where: { companyId: company.id },
+      where: { companyId: companyId },
       include: {
         templates: { select: { id: true, fileName: true, fileUrl: true } },
         attachments: { select: { id: true, fileName: true, fileUrl: true, fileType: true, publicId: true } },
@@ -190,11 +189,11 @@ export const getGeneration = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const generation = await prisma.postGeneration.findFirst({
-      where: { id: req.params.id, companyId: company.id },
+      where: { id: req.params.id, companyId: companyId },
       include: {
         templates: { select: { id: true, fileName: true, fileUrl: true } },
         attachments: { select: { id: true, fileName: true, fileUrl: true, fileType: true, publicId: true } },
@@ -218,8 +217,8 @@ export const composeGeneration = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const parsed = createPostGenerationSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -227,13 +226,13 @@ export const composeGeneration = async (req: AuthRequest, res: Response) => {
     }
     const { prompt, templateIds, attachmentIds, agentId } = parsed.data;
 
-    const validationError = await validateReferenceIds(company.id, templateIds, attachmentIds);
+    const validationError = await validateReferenceIds(companyId, templateIds, attachmentIds);
     if (validationError) return res.status(400).json({ error: validationError });
 
     let agent: ComposerAgent | null = null;
     if (agentId) {
       const agentRow = await prisma.agent.findFirst({
-        where: { id: agentId, companyId: company.id, kind: AgentKind.COMPANY, isActive: true },
+        where: { id: agentId, companyId: companyId, kind: AgentKind.COMPANY, isActive: true },
       });
       if (!agentRow) return res.status(400).json({ error: "Agente selecionado é inválido" });
       agent = {
@@ -300,9 +299,9 @@ export const composeGeneration = async (req: AuthRequest, res: Response) => {
     );
     referenceNotes.push(...attachmentAnalyses.filter((note): note is string => note !== null));
 
-    const composedPrompt = await composeImagePrompt({ userRequest: prompt, referenceNotes, agent });
+    const { promptEn, promptPt } = await composeImagePrompt({ userRequest: prompt, referenceNotes, agent });
 
-    return res.json({ composedPrompt });
+    return res.json({ composedPromptEn: promptEn, composedPromptPt: promptPt });
   } catch (error) {
     return handleError(res, error, "Erro ao montar prompt da geração:");
   }
@@ -313,8 +312,8 @@ export const createGeneration = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const parsed = createPostGenerationSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -322,12 +321,12 @@ export const createGeneration = async (req: AuthRequest, res: Response) => {
     }
     const { prompt, templateIds, attachmentIds } = parsed.data;
 
-    const validationError = await validateReferenceIds(company.id, templateIds, attachmentIds);
+    const validationError = await validateReferenceIds(companyId, templateIds, attachmentIds);
     if (validationError) return res.status(400).json({ error: validationError });
 
     const generation = await prisma.postGeneration.create({
       data: {
-        companyId: company.id,
+        companyId: companyId,
         createdById: userId,
         prompt,
         replicateModel: process.env.REPLICATE_IMAGE_MODEL || "google/nano-banana",
@@ -356,11 +355,11 @@ export const deleteGeneration = async (req: AuthRequest, res: Response) => {
     const userId = req.userId;
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
 
-    const company = await resolveUserCompany(userId);
-    if (!company) return res.status(404).json({ error: "Empresa não encontrada" });
+    const companyId = req.companyId;
+    if (!companyId) return res.status(404).json({ error: "Empresa não encontrada" });
 
     const generation = await prisma.postGeneration.findFirst({
-      where: { id: req.params.id, companyId: company.id },
+      where: { id: req.params.id, companyId: companyId },
     });
     if (!generation) return res.status(404).json({ error: "Geração não encontrada" });
 

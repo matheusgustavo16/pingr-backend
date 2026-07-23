@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { deleteFile, getSignedDeliveryUrl, uploadFile } from "../services/cloudinary.service";
 import { DocumentServiceError, requireDocumentInCompany, requireFolderInCompany } from "../services/document.service";
 import { updateDocumentSchema } from "../schemas/document.schema";
@@ -25,8 +24,8 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Nenhum arquivo enviado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -35,10 +34,10 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
       typeof req.body.workspaceId === "string" && req.body.workspaceId ? req.body.workspaceId : null;
 
     if (folderId) {
-      const folder = await requireFolderInCompany(folderId, company.id);
+      const folder = await requireFolderInCompany(folderId, companyId);
       workspaceId = folder.workspaceId;
     } else if (workspaceId) {
-      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, companyId: company.id } });
+      const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, companyId: companyId } });
       if (!workspace) {
         return res.status(400).json({ error: "Workspace inválida" });
       }
@@ -46,7 +45,7 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
 
     const uploadResult = await uploadFile(
       req.file.buffer,
-      `documents/${company.id}/${folderId ?? "root"}`,
+      `documents/${companyId}/${folderId ?? "root"}`,
       req.file.originalname,
       req.file.mimetype
     );
@@ -60,7 +59,7 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
         fileSize: req.file.size,
         folderId,
         workspaceId,
-        companyId: company.id,
+        companyId: companyId,
         uploadedById: userId,
       },
     });
@@ -88,12 +87,12 @@ export const updateDocument = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const document = await requireDocumentInCompany(req.params.id, company.id);
+    const document = await requireDocumentInCompany(req.params.id, companyId);
 
     const parsed = updateDocumentSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -106,7 +105,7 @@ export const updateDocument = async (req: AuthRequest, res: Response) => {
     if (data.folderId !== undefined) {
       folderId = data.folderId;
       if (folderId) {
-        const targetFolder = await requireFolderInCompany(folderId, company.id);
+        const targetFolder = await requireFolderInCompany(folderId, companyId);
         if (targetFolder.workspaceId !== document.workspaceId) {
           throw new DocumentServiceError(
             "Não é possível mover um documento entre a empresa e um workspace diferente",
@@ -154,12 +153,12 @@ export const deleteDocument = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const document = await requireDocumentInCompany(req.params.id, company.id);
+    const document = await requireDocumentInCompany(req.params.id, companyId);
 
     try {
       await deleteFile(document.publicId, document.fileType ?? undefined);

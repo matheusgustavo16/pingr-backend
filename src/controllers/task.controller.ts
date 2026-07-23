@@ -2,7 +2,6 @@ import { Response } from "express";
 import { Prisma, TaskActivityType, TaskPriority, TaskStatus } from "@prisma/client";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
-import { resolveUserCompany } from "../services/company.service";
 import { getSignedDeliveryUrl } from "../services/cloudinary.service";
 import {
   assertAssigneeInCompany,
@@ -64,8 +63,8 @@ export const listTasks = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -82,7 +81,7 @@ export const listTasks = async (req: AuthRequest, res: Response) => {
       pageSize: pageSizeRaw,
     } = req.query as Record<string, string | undefined>;
 
-    const where: Prisma.TaskWhereInput = { companyId: company.id };
+    const where: Prisma.TaskWhereInput = { companyId: companyId };
 
     if (workspaceId) {
       where.workspaceId = workspaceId;
@@ -163,13 +162,13 @@ export const getTask = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
     const task = await prisma.task.findFirst({
-      where: { id: req.params.id, companyId: company.id },
+      where: { id: req.params.id, companyId: companyId },
       include: TASK_DETAIL_INCLUDE,
     });
 
@@ -203,8 +202,8 @@ export const createTask = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -213,7 +212,7 @@ export const createTask = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: parsed.error.issues[0]?.message || "Dados inválidos" });
     }
 
-    const task = await createTaskService(company.id, userId, parsed.data);
+    const task = await createTaskService(companyId, userId, parsed.data);
 
     return res.status(201).json({ task });
   } catch (error) {
@@ -228,8 +227,8 @@ export const updateTask = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -238,7 +237,7 @@ export const updateTask = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: parsed.error.issues[0]?.message || "Dados inválidos" });
     }
 
-    const updated = await updateTaskService(company.id, userId, req.params.id, parsed.data);
+    const updated = await updateTaskService(companyId, userId, req.params.id, parsed.data);
 
     return res.json({ task: updated });
   } catch (error) {
@@ -253,12 +252,12 @@ export const moveTask = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const existing = await requireTaskInCompany(req.params.id, company.id);
+    const existing = await requireTaskInCompany(req.params.id, companyId);
 
     const parsed = moveTaskSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -284,7 +283,7 @@ export const moveTask = async (req: AuthRequest, res: Response) => {
       return result;
     });
 
-    emitTaskEvent(company.id, "TASK_MOVED", updated);
+    emitTaskEvent(companyId, "TASK_MOVED", updated);
 
     return res.json({ task: updated });
   } catch (error) {
@@ -299,16 +298,16 @@ export const deleteTask = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const existing = await requireTaskInCompany(req.params.id, company.id);
+    const existing = await requireTaskInCompany(req.params.id, companyId);
 
     await prisma.task.delete({ where: { id: existing.id } });
 
-    emitTaskEvent(company.id, "TASK_DELETED", { id: existing.id });
+    emitTaskEvent(companyId, "TASK_DELETED", { id: existing.id });
 
     return res.json({ message: "Task removida com sucesso" });
   } catch (error) {
@@ -323,8 +322,8 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
@@ -335,7 +334,7 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
     const { taskIds, action, payload } = parsed.data;
 
     const uniqueTaskIds = Array.from(new Set(taskIds));
-    const count = await prisma.task.count({ where: { id: { in: uniqueTaskIds }, companyId: company.id } });
+    const count = await prisma.task.count({ where: { id: { in: uniqueTaskIds }, companyId: companyId } });
     if (count !== uniqueTaskIds.length) {
       return res.status(404).json({ error: "Uma ou mais tasks não pertencem à empresa" });
     }
@@ -381,7 +380,7 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
         if (!payload?.userId) {
           return res.status(400).json({ error: "userId é obrigatório para action=assign" });
         }
-        await assertAssigneeInCompany(payload.userId, company.id);
+        await assertAssigneeInCompany(payload.userId, companyId);
         for (const taskId of uniqueTaskIds) {
           await prisma.taskAssignee.upsert({
             where: { taskId_userId: { taskId, userId: payload.userId } },
@@ -398,7 +397,7 @@ export const bulkAction = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    emitTaskEvent(company.id, "TASK_BULK_UPDATED", { taskIds: uniqueTaskIds, action, payload });
+    emitTaskEvent(companyId, "TASK_BULK_UPDATED", { taskIds: uniqueTaskIds, action, payload });
 
     return res.json({ message: "Ação em lote aplicada com sucesso", taskIds: uniqueTaskIds, action });
   } catch (error) {
@@ -413,19 +412,19 @@ export const addAssignee = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
     const { userId: assigneeId } = req.body as { userId?: string };
 
     if (!assigneeId) {
       return res.status(400).json({ error: "userId é obrigatório" });
     }
 
-    await assertAssigneeInCompany(assigneeId, company.id);
+    await assertAssigneeInCompany(assigneeId, companyId);
 
     const existing = await prisma.taskAssignee.findUnique({
       where: { taskId_userId: { taskId: task.id, userId: assigneeId } },
@@ -441,7 +440,7 @@ export const addAssignee = async (req: AuthRequest, res: Response) => {
 
     await logActivity(task.id, TaskActivityType.ASSIGNEE_ADDED, userId, undefined, { userId: assigneeId });
     void notifyTaskEvent("ASSIGNEE_ADDED", task, userId, [assigneeId]);
-    emitTaskEvent(company.id, "TASK_ASSIGNEE_ADDED", { taskId: task.id, assignee });
+    emitTaskEvent(companyId, "TASK_ASSIGNEE_ADDED", { taskId: task.id, assignee });
 
     return res.status(201).json({ assignee });
   } catch (error) {
@@ -456,17 +455,17 @@ export const removeAssignee = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
     const { userId: assigneeId } = req.params;
 
     await prisma.taskAssignee.deleteMany({ where: { taskId: task.id, userId: assigneeId } });
     await logActivity(task.id, TaskActivityType.ASSIGNEE_REMOVED, userId, { userId: assigneeId }, undefined);
-    emitTaskEvent(company.id, "TASK_ASSIGNEE_REMOVED", { taskId: task.id, userId: assigneeId });
+    emitTaskEvent(companyId, "TASK_ASSIGNEE_REMOVED", { taskId: task.id, userId: assigneeId });
 
     return res.json({ message: "Assignee removido com sucesso" });
   } catch (error) {
@@ -481,19 +480,19 @@ export const addWatcher = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
     const { userId: watcherId } = req.body as { userId?: string };
 
     if (!watcherId) {
       return res.status(400).json({ error: "userId é obrigatório" });
     }
 
-    await assertAssigneeInCompany(watcherId, company.id);
+    await assertAssigneeInCompany(watcherId, companyId);
 
     const watcher = await prisma.taskWatcher.upsert({
       where: { taskId_userId: { taskId: task.id, userId: watcherId } },
@@ -502,7 +501,7 @@ export const addWatcher = async (req: AuthRequest, res: Response) => {
       include: { user: { select: { id: true, name: true, email: true, picture: true } } },
     });
 
-    emitTaskEvent(company.id, "TASK_WATCHER_ADDED", { taskId: task.id, watcher });
+    emitTaskEvent(companyId, "TASK_WATCHER_ADDED", { taskId: task.id, watcher });
 
     return res.status(201).json({ watcher });
   } catch (error) {
@@ -517,16 +516,16 @@ export const removeWatcher = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
     const { userId: watcherId } = req.params;
 
     await prisma.taskWatcher.deleteMany({ where: { taskId: task.id, userId: watcherId } });
-    emitTaskEvent(company.id, "TASK_WATCHER_REMOVED", { taskId: task.id, userId: watcherId });
+    emitTaskEvent(companyId, "TASK_WATCHER_REMOVED", { taskId: task.id, userId: watcherId });
 
     return res.json({ message: "Watcher removido com sucesso" });
   } catch (error) {
@@ -541,12 +540,12 @@ export const getTaskActivity = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const company = await resolveUserCompany(userId);
-    if (!company) {
+    const companyId = req.companyId;
+    if (!companyId) {
       return res.status(404).json({ error: "Empresa não encontrada" });
     }
 
-    const task = await requireTaskInCompany(req.params.id, company.id);
+    const task = await requireTaskInCompany(req.params.id, companyId);
 
     const page = Math.max(1, parseInt((req.query.page as string) || "1", 10) || 1);
     const pageSize = Math.min(100, Math.max(1, parseInt((req.query.pageSize as string) || "20", 10) || 20));

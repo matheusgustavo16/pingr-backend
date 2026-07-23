@@ -15,6 +15,8 @@ import {
   createWorkspace,
   updateWorkspace,
   deleteWorkspace,
+  listCompanies,
+  switchCompany,
 } from "../controllers/company.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { upload } from "../middleware/upload.middleware";
@@ -23,6 +25,8 @@ const router = Router();
 
 // Todas as rotas de empresa requerem autenticação
 router.post("/", authenticate, createCompany);
+router.get("/", authenticate, listCompanies);
+router.post("/switch", authenticate, switchCompany);
 router.get("/me", authenticate, getMyCompany);
 router.patch("/me", authenticate, updateCompany);
 router.post("/me/workspaces", authenticate, createWorkspace);

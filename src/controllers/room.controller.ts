@@ -3,8 +3,8 @@ import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { RoomTypes } from "@prisma/client";
 import { ChatService } from "../services/chat.service";
-import { resolveUserCompany } from "../services/company.service";
 import { WebSocketServer } from "../ws/socket-server";
+import { ScheduleService } from "../services/schedule.service";
 
 export const createRoom = async (req: AuthRequest, res: Response) => {
   try {
@@ -15,17 +15,17 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    // Buscar a empresa do usuário (Dono ou membro ativo)
-    const company = await resolveUserCompany(userId);
+    // Empresa ativa da sessão (já validada pelo middleware de autenticação)
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
     }
 
     const requester = await prisma.companyMember.findUnique({
-      where: { userId_companyId: { userId, companyId: company.id } },
+      where: { userId_companyId: { userId, companyId } },
     });
 
     if (!requester) {
@@ -59,7 +59,7 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
       const workspace = await prisma.workspace.findFirst({
         where: {
           id: workspaceId,
-          companyId: company.id,
+          companyId,
         },
       });
       if (workspace) {
@@ -71,7 +71,7 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
     let validCategoryId: string | null = null;
     if (categoryId) {
       const category = await prisma.roomCategory.findFirst({
-        where: { id: categoryId, companyId: company.id },
+        where: { id: categoryId, companyId },
       });
       if (category) {
         validCategoryId = categoryId;
@@ -87,7 +87,7 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
         data: {
           title: title.trim(),
           type: roomType,
-          companyId: company.id,
+          companyId,
           categoryId: validCategoryId,
           workspaceId: validWorkspaceId,
           isOpen: Boolean(isOpen),
@@ -126,7 +126,7 @@ export const createRoom = async (req: AuthRequest, res: Response) => {
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("ROOM_CREATED", { room: roomPayload });
     } catch (error) {
       console.error("Erro ao emitir ROOM_CREATED via socket:", error);
@@ -150,17 +150,35 @@ export const getRoomPublicInfo = async (req: AuthRequest, res: Response) => {
 
     const room = await prisma.room.findUnique({
       where: { id },
-      select: { id: true, title: true, isOpen: true },
+      select: {
+        id: true,
+        title: true,
+        isOpen: true,
+        company: { select: { title: true } },
+      },
     });
 
     if (!room) {
       return res.status(404).json({ error: "Sala não encontrada" });
     }
 
+    // Info de agendamento é usada pela tela pública de meet (fora do
+    // /office, sem sessão de empresa — inclusive visitantes) pra bloquear
+    // entrada antes/depois do horário, igual à versão dentro do /office.
+    // getScheduleEventByRoom já resolve a ocorrência certa pra séries
+    // recorrentes; aqui só expõe os campos mínimos, sem dados sensíveis
+    // (empresa, criador etc — só o nome, pra tela de visitante mostrar
+    // "<sala> de <empresa>").
+    const event = await ScheduleService.getScheduleEventByRoom(id);
+
     return res.json({
       id: room.id,
       title: room.title,
       isOpen: room.isOpen,
+      companyName: room.company.title,
+      scheduledEvent: event
+        ? { id: event.id, title: event.title, startAt: event.startAt, endAt: event.endAt }
+        : null,
     });
   } catch (error) {
     console.error("Erro ao buscar info pública da sala:", error);
@@ -182,16 +200,16 @@ export const updateRoomPosition = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Posição inválida" });
     }
 
-    const company = await resolveUserCompany(userId);
+    const companyId = req.companyId;
 
-    if (!company) {
+    if (!companyId) {
       return res
         .status(404)
         .json({ error: "Empresa não encontrada. Crie uma empresa primeiro." });
     }
 
     const room = await prisma.room.findFirst({
-      where: { id, companyId: company.id },
+      where: { id, companyId },
     });
 
     if (!room) {
@@ -208,7 +226,7 @@ export const updateRoomPosition = async (req: AuthRequest, res: Response) => {
     try {
       WebSocketServer.getInstance()
         .getIO()
-        .to(`company:${company.id}`)
+        .to(`company:${companyId}`)
         .emit("ROOM_POSITION_UPDATED", { roomId: updated.id, x: updated.x, y: updated.y });
     } catch (error) {
       console.error("Erro ao emitir ROOM_POSITION_UPDATED via socket:", error);

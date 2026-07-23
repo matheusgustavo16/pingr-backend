@@ -73,6 +73,48 @@ export function expandOccurrences(
   }));
 }
 
+export interface ResolvedOccurrence {
+  occurrenceDate: Date;
+  startAt: Date;
+  endAt: Date;
+}
+
+/**
+ * Resolve qual ocorrência de uma série recorrente é "relevante" agora: a que
+ * está em andamento (ou prestes a começar), senão a próxima futura, senão —
+ * se a série já acabou (recurrenceUntil no passado) — a última ocorrência
+ * passada. Usado por telas que só têm espaço pra mostrar UMA data (ex: sala
+ * de reunião checando se o evento "já acabou"), que sem isso comparavam
+ * sempre contra a primeira ocorrência (startAt/endAt do mestre) e reportavam
+ * uma série semanal como encerrada depois da primeira semana.
+ */
+export function resolveRelevantOccurrence(
+  event: RecurringEventLike,
+  now: Date
+): ResolvedOccurrence | null {
+  const rule = buildRRule(event);
+  const durationMs = event.endAt.getTime() - event.startAt.getTime();
+
+  const before = rule.before(now, true);
+  if (before) {
+    const endAt = new Date(before.getTime() + durationMs);
+    if (endAt >= now) {
+      return { occurrenceDate: before, startAt: before, endAt };
+    }
+  }
+
+  const after = rule.after(now, false);
+  if (after) {
+    return { occurrenceDate: after, startAt: after, endAt: new Date(after.getTime() + durationMs) };
+  }
+
+  if (before) {
+    return { occurrenceDate: before, startAt: before, endAt: new Date(before.getTime() + durationMs) };
+  }
+
+  return null;
+}
+
 /** ID sintético estável pra uma ocorrência, usado só na resposta pro frontend. */
 export function occurrenceId(eventId: string, occurrenceDate: Date): string {
   return `${eventId}::${occurrenceDate.toISOString()}`;

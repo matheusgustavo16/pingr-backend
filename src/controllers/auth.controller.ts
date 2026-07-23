@@ -13,6 +13,7 @@ import {
 import { AuthRequest } from "../middleware/auth.middleware";
 import { GoogleAuthService } from "../services/google-auth.service";
 import { GitHubAuthService } from "../services/github-auth.service";
+import { resolveUserCompany } from "../services/company.service";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -80,8 +81,8 @@ export const register = async (req: Request, res: Response) => {
         .json({ error: "Erro de configuração do servidor" });
     }
 
-    // Gerar token
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
+    // Gerar token (usuário recém-criado ainda não tem empresa)
+    const token = jwt.sign({ userId: user.id, companyId: null }, JWT_SECRET, {
       expiresIn: "7d",
     });
 
@@ -176,10 +177,13 @@ export const login = async (req: Request, res: Response) => {
         .json({ error: "Erro de configuração do servidor" });
     }
 
-    // Gerar token
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    // Gerar token, embutindo a empresa ativa padrão do usuário
+    const defaultCompany = await resolveUserCompany(user.id);
+    const token = jwt.sign(
+      { userId: user.id, companyId: defaultCompany?.id ?? null },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
     return res.json({
       user: {
@@ -288,7 +292,12 @@ export const googleAuthCallback = async (req: Request, res: Response) => {
       return res.redirect(`${frontendUrl}/auth/login?error=server_config`);
     }
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+    const defaultCompany = await resolveUserCompany(user.id);
+    const token = jwt.sign(
+      { userId: user.id, companyId: defaultCompany?.id ?? null },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
     const destination = isNewUser ? "/onboarding" : redirectTo;
 
     return res.redirect(
@@ -391,7 +400,12 @@ export const githubAuthCallback = async (req: Request, res: Response) => {
       return res.redirect(`${frontendUrl}/auth/login?error=server_config`);
     }
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+    const defaultCompany = await resolveUserCompany(user.id);
+    const token = jwt.sign(
+      { userId: user.id, companyId: defaultCompany?.id ?? null },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
     const destination = isNewUser ? "/onboarding" : redirectTo;
 
     return res.redirect(
@@ -484,6 +498,8 @@ export const getMe = async (req: AuthRequest, res: Response) => {
         name: true,
         email: true,
         picture: true,
+        bio: true,
+        phone: true,
         status: true,
         locale: true,
         preferences: true,
@@ -666,7 +682,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: "Usuário não autenticado" });
     }
 
-    const { name } = req.body;
+    const { name, bio, phone } = req.body;
 
     // Validação de nome
     if (name !== undefined) {
@@ -677,9 +693,25 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     }
 
     // Preparar dados para atualização
-    const updateData: { name?: string } = {};
+    const updateData: { name?: string; bio?: string | null; phone?: string | null } = {};
     if (name !== undefined) {
       updateData.name = name.trim();
+    }
+
+    if (bio !== undefined) {
+      const trimmed = bio === null ? null : String(bio).trim();
+      if (trimmed && trimmed.length > 280) {
+        return res.status(400).json({ error: "Biografia deve ter no máximo 280 caracteres" });
+      }
+      updateData.bio = trimmed || null;
+    }
+
+    if (phone !== undefined) {
+      const trimmed = phone === null ? null : String(phone).trim();
+      if (trimmed && trimmed.replace(/\D/g, "").length < 10) {
+        return res.status(400).json({ error: "Telefone inválido" });
+      }
+      updateData.phone = trimmed || null;
     }
 
     const updatedUser = await prisma.user.update({
@@ -690,6 +722,8 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         name: true,
         email: true,
         picture: true,
+        bio: true,
+        phone: true,
         status: true,
         memberships: {
           select: {
