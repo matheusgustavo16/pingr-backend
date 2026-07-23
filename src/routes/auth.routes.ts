@@ -4,6 +4,8 @@ import {
   register,
   googleAuthStart,
   googleAuthCallback,
+  githubAuthStart,
+  githubAuthCallback,
   createGuest,
   getMe,
   updateStatus,
@@ -27,6 +29,8 @@ router.post("/register", register);
 router.post("/login", login);
 router.get("/google", googleAuthStart);
 router.get("/google/callback", googleAuthCallback);
+router.get("/github", githubAuthStart);
+router.get("/github/callback", githubAuthCallback);
 router.post("/guest", createGuest);
 router.get("/me", authenticate, getMe);
 router.patch("/status", authenticate, updateStatus);

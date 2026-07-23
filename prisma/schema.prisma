@@ -17,6 +17,7 @@ model User {
   password    String?
   picture     String?
   googleId    String?    @unique
+  githubId    String?    @unique
   status      UserStatus @default(AVAILABLE)
   locale      String     @default("pt-BR")
   preferences Json       @default("{}")

@@ -12,6 +12,7 @@ import {
 } from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { GoogleAuthService } from "../services/google-auth.service";
+import { GitHubAuthService } from "../services/github-auth.service";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -291,7 +292,7 @@ export const googleAuthCallback = async (req: Request, res: Response) => {
     const destination = isNewUser ? "/onboarding" : redirectTo;
 
     return res.redirect(
-      `${frontendUrl}/auth/google/callback?token=${encodeURIComponent(
+      `${frontendUrl}/auth/oauth/callback?token=${encodeURIComponent(
         token
       )}&redirect=${encodeURIComponent(destination)}`
     );
@@ -299,6 +300,109 @@ export const googleAuthCallback = async (req: Request, res: Response) => {
     console.error("Erro no login com Google:", error);
     return res.redirect(
       `${frontendUrl}/auth/login?error=google_failed&message=${encodeURIComponent(
+        error.message || "Erro desconhecido"
+      )}`
+    );
+  }
+};
+
+/**
+ * Inicia o login/cadastro via GitHub.
+ * Não requer autenticação. Retorna a URL de autorização do GitHub.
+ */
+export const githubAuthStart = async (req: Request, res: Response) => {
+  try {
+    const redirectTo =
+      typeof req.query.redirect === "string" ? req.query.redirect : "/office";
+    const state = Buffer.from(JSON.stringify({ redirectTo })).toString("base64");
+    const authUrl = GitHubAuthService.getAuthorizationUrl(state);
+    return res.json({ authUrl });
+  } catch (error: any) {
+    console.error("Erro ao iniciar login com GitHub:", error);
+    return res.status(500).json({
+      error: "Erro ao iniciar login com GitHub",
+      details: error.message,
+    });
+  }
+};
+
+/**
+ * Callback do OAuth do GitHub para login/cadastro.
+ * Cria o usuário se ele ainda não existir (find-or-create por githubId/email).
+ * Não requer autenticação - o GitHub chama diretamente via redirect do navegador.
+ */
+export const githubAuthCallback = async (req: Request, res: Response) => {
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+  try {
+    const { code, state } = req.query;
+
+    if (!code || typeof code !== "string") {
+      return res.redirect(`${frontendUrl}/auth/login?error=github_no_code`);
+    }
+
+    let redirectTo = "/office";
+    if (typeof state === "string") {
+      try {
+        const parsed = JSON.parse(Buffer.from(state, "base64").toString("utf-8"));
+        if (parsed?.redirectTo) redirectTo = parsed.redirectTo;
+      } catch {
+        // state inválido/ausente: segue com o redirect padrão
+      }
+    }
+
+    const accessToken = await GitHubAuthService.exchangeCodeForToken(code);
+    const githubUser = await GitHubAuthService.getUserInfo(accessToken);
+
+    if (!githubUser.email) {
+      return res.redirect(`${frontendUrl}/auth/login?error=github_no_email`);
+    }
+
+    const email = githubUser.email.toLowerCase().trim();
+    const githubId = githubUser.id.toString();
+
+    let user = await prisma.user.findFirst({
+      where: { OR: [{ githubId }, { email }] },
+    });
+
+    let isNewUser = false;
+    if (!user) {
+      isNewUser = true;
+      user = await prisma.user.create({
+        data: {
+          name: githubUser.name || githubUser.login || email.split("@")[0],
+          email,
+          password: null,
+          picture: githubUser.avatar_url,
+          githubId,
+        },
+      });
+    } else if (!user.githubId) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          githubId,
+          picture: user.picture || githubUser.avatar_url,
+        },
+      });
+    }
+
+    if (!JWT_SECRET) {
+      return res.redirect(`${frontendUrl}/auth/login?error=server_config`);
+    }
+
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+    const destination = isNewUser ? "/onboarding" : redirectTo;
+
+    return res.redirect(
+      `${frontendUrl}/auth/oauth/callback?token=${encodeURIComponent(
+        token
+      )}&redirect=${encodeURIComponent(destination)}`
+    );
+  } catch (error: any) {
+    console.error("Erro no login com GitHub:", error);
+    return res.redirect(
+      `${frontendUrl}/auth/login?error=github_failed&message=${encodeURIComponent(
         error.message || "Erro desconhecido"
       )}`
     );
