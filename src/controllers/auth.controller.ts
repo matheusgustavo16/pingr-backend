@@ -11,6 +11,7 @@ import {
   validateName,
 } from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
+import { GoogleAuthService } from "../services/google-auth.service";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -199,6 +200,108 @@ export const login = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Erro no login:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Inicia o login/cadastro via Google.
+ * Não requer autenticação. Retorna a URL de autorização do Google.
+ */
+export const googleAuthStart = async (req: Request, res: Response) => {
+  try {
+    const redirectTo =
+      typeof req.query.redirect === "string" ? req.query.redirect : "/office";
+    const state = Buffer.from(JSON.stringify({ redirectTo })).toString("base64");
+    const authUrl = GoogleAuthService.getAuthorizationUrl(state);
+    return res.json({ authUrl });
+  } catch (error: any) {
+    console.error("Erro ao iniciar login com Google:", error);
+    return res.status(500).json({
+      error: "Erro ao iniciar login com Google",
+      details: error.message,
+    });
+  }
+};
+
+/**
+ * Callback do OAuth do Google para login/cadastro.
+ * Cria o usuário se ele ainda não existir (find-or-create por googleId/email).
+ * Não requer autenticação - o Google chama diretamente via redirect do navegador.
+ */
+export const googleAuthCallback = async (req: Request, res: Response) => {
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+
+  try {
+    const { code, state } = req.query;
+
+    if (!code || typeof code !== "string") {
+      return res.redirect(`${frontendUrl}/auth/login?error=google_no_code`);
+    }
+
+    let redirectTo = "/office";
+    if (typeof state === "string") {
+      try {
+        const parsed = JSON.parse(Buffer.from(state, "base64").toString("utf-8"));
+        if (parsed?.redirectTo) redirectTo = parsed.redirectTo;
+      } catch {
+        // state inválido/ausente: segue com o redirect padrão
+      }
+    }
+
+    const tokens = await GoogleAuthService.exchangeCodeForTokens(code);
+    const userInfo = await GoogleAuthService.getUserInfo(tokens.accessToken);
+
+    if (!userInfo.email) {
+      return res.redirect(`${frontendUrl}/auth/login?error=google_no_email`);
+    }
+
+    const email = userInfo.email.toLowerCase().trim();
+
+    let user = await prisma.user.findFirst({
+      where: { OR: [{ googleId: userInfo.sub }, { email }] },
+    });
+
+    let isNewUser = false;
+    if (!user) {
+      isNewUser = true;
+      user = await prisma.user.create({
+        data: {
+          name: userInfo.name || email.split("@")[0],
+          email,
+          password: null,
+          picture: userInfo.picture,
+          googleId: userInfo.sub,
+        },
+      });
+    } else if (!user.googleId) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          googleId: userInfo.sub,
+          picture: user.picture || userInfo.picture,
+        },
+      });
+    }
+
+    if (!JWT_SECRET) {
+      return res.redirect(`${frontendUrl}/auth/login?error=server_config`);
+    }
+
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "7d" });
+    const destination = isNewUser ? "/onboarding" : redirectTo;
+
+    return res.redirect(
+      `${frontendUrl}/auth/google/callback?token=${encodeURIComponent(
+        token
+      )}&redirect=${encodeURIComponent(destination)}`
+    );
+  } catch (error: any) {
+    console.error("Erro no login com Google:", error);
+    return res.redirect(
+      `${frontendUrl}/auth/login?error=google_failed&message=${encodeURIComponent(
+        error.message || "Erro desconhecido"
+      )}`
+    );
   }
 };
 
