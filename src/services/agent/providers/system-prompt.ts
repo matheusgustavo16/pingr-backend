@@ -9,11 +9,28 @@ export interface DocumentContext {
   pageText?: string;
 }
 
+export interface TaskMentionContext {
+  title: string;
+  description: string | null;
+  status: string;
+}
+
+export interface AttachedDocumentContext {
+  fileName: string;
+  /** null = tipo sem análise automática, ou job ainda PENDING/PROCESSING/FAILED. */
+  description: string | null;
+}
+
 export interface BuildSystemPromptOptions {
   /** Threading de histórico ativo pra esta chamada (ver runAgentQuery `history`) —
    *  muda a instrução de "mensagem única" pra uma que reconhece o contexto prévio. */
   hasHistory?: boolean;
   documentContext?: DocumentContext;
+  /** Tarefa mencionada com #Título na mensagem de chat que disparou a consulta. */
+  taskContext?: TaskMentionContext;
+  /** Documento(s) anexados na mensagem de chat que disparou a consulta — a
+   *  descrição já vem cacheada de document-analysis.service.ts (upload). */
+  attachedDocuments?: AttachedDocumentContext[];
 }
 
 export function buildSystemPrompt(ctx: AgentContext, agent: Agent, options?: BuildSystemPromptOptions): string {
@@ -55,6 +72,24 @@ export function buildSystemPrompt(ctx: AgentContext, agent: Agent, options?: Bui
         .join(" ")
     : null;
 
+  const task = options?.taskContext;
+  const taskParagraph = task
+    ? `Esta mensagem menciona a tarefa "${task.title}" (status: ${task.status})` +
+      (task.description ? `: ${task.description}` : ".") +
+      " Use isso como contexto quando for relevante pra responder ou gerar conteúdo/posts."
+    : null;
+
+  const docs = options?.attachedDocuments;
+  const attachedDocumentsParagraph = docs?.length
+    ? docs
+        .map((d) =>
+          d.description
+            ? `Documento anexado "${d.fileName}": """${d.description.slice(0, 6000)}"""`
+            : `Documento anexado "${d.fileName}" (conteúdo ainda não disponível — ainda processando ou tipo sem análise automática; se a pergunta depender do conteúdo dele, diga isso ao usuário em vez de inventar).`
+        )
+        .join(" ")
+    : null;
+
   return [
     persona,
     agent.philosophy ? `Sua filosofia de trabalho: ${agent.philosophy}.` : null,
@@ -69,6 +104,8 @@ export function buildSystemPrompt(ctx: AgentContext, agent: Agent, options?: Bui
       : "Esta é uma interação de mensagem única: se você parar pra perguntar um detalhe, essa pergunta já é sua resposta final — o usuário só vai poder responder numa mensagem nova, depois. Por isso, nunca pare a execução pra pedir campos opcionais ou decorativos (título de evento/tarefa, descrição etc.) — preencha com um valor padrão razoável a partir do contexto da conversa (ex: título \"Reunião\" ou \"Call\") e siga em frente com a ação. Só pergunte antes de agir se faltar um dado essencial que é genuinamente impossível de inferir e sem o qual a ferramenta não pode ser chamada de jeito nenhum.",
     "Se não houver ferramenta para o que foi pedido, diga isso claramente em vez de inventar uma resposta.",
     documentParagraph,
+    taskParagraph,
+    attachedDocumentsParagraph,
   ]
     .filter(Boolean)
     .join(" ");

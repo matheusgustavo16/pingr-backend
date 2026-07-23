@@ -64,6 +64,11 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
       },
     });
 
+    const { documentAnalysisService } = await import("../services/document-analysis.service");
+    void documentAnalysisService
+      .enqueueForDocument(document.id, document.fileType)
+      .catch((error) => console.error("Erro ao enfileirar análise de documento:", error));
+
     return res.status(201).json({
       document: {
         ...document,
@@ -143,6 +148,39 @@ export const updateDocument = async (req: AuthRequest, res: Response) => {
     });
   } catch (error) {
     return handleError(res, error, "Erro ao atualizar documento:");
+  }
+};
+
+/**
+ * Dispara (ou redispara) a análise de conteúdo de um documento manualmente —
+ * cobre arquivos enviados antes desse pipeline existir, ou onde a análise
+ * automática falhou.
+ * POST /documents/:id/analyze
+ */
+export const analyzeDocument = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const companyId = req.companyId;
+    if (!companyId) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    const document = await requireDocumentInCompany(req.params.id, companyId);
+
+    const { documentAnalysisService } = await import("../services/document-analysis.service");
+    if (!documentAnalysisService.isAnalyzableType(document.fileType)) {
+      return res.status(400).json({ error: "Tipo de arquivo sem análise automática disponível" });
+    }
+
+    await documentAnalysisService.enqueueForDocument(document.id, document.fileType);
+
+    return res.status(202).json({ document: { ...document, analysisStatus: "PENDING", analysisError: null } });
+  } catch (error) {
+    return handleError(res, error, "Erro ao analisar documento:");
   }
 };
 

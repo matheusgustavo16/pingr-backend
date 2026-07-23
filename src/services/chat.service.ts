@@ -14,7 +14,38 @@ import {
   PaginatedMessages,
   ChatParticipantInfo,
   ChatChannelInfo,
+  ChatPostProposalInfo,
+  ChatPostProposalItemStatus,
 } from "../types/chat.types";
+
+const PROPOSAL_INCLUDE = {
+  items: {
+    include: { postGeneration: { select: { status: true, resultUrl: true, errorMessage: true } } },
+    orderBy: { index: "asc" as const },
+  },
+} satisfies Prisma.ChatPostProposalInclude;
+
+function mapProposal(
+  proposal: Prisma.ChatPostProposalGetPayload<{ include: typeof PROPOSAL_INCLUDE }> | null
+): ChatPostProposalInfo | null {
+  if (!proposal) return null;
+  return {
+    id: proposal.id,
+    taskId: proposal.taskId,
+    items: proposal.items.map((item) => ({
+      id: item.id,
+      index: item.index,
+      title: item.title,
+      details: item.details,
+      promptEn: item.promptEn,
+      promptPt: item.promptPt,
+      postGenerationId: item.postGenerationId,
+      status: (item.postGeneration?.status ?? "DRAFT") as ChatPostProposalItemStatus,
+      resultUrl: item.postGeneration?.resultUrl ?? null,
+      errorMessage: item.postGeneration?.errorMessage ?? null,
+    })),
+  };
+}
 
 export class ChatService {
   /**
@@ -257,6 +288,7 @@ export class ChatService {
             picture: true,
           },
         },
+        postProposal: { include: PROPOSAL_INCLUDE },
       },
       orderBy: {
         createdAt: "desc",
@@ -280,11 +312,20 @@ export class ChatService {
       .map((msg) => (msg.metadata as Record<string, unknown> | null)?.documentId)
       .filter((id): id is string => typeof id === "string");
 
-    const documentsById = fileDocumentIds.length
+    const textAttachmentDocumentIds = messagesToReturn.flatMap((msg) => {
+      const attachments = (msg.metadata as Record<string, unknown> | null)?.attachments;
+      if (!Array.isArray(attachments)) return [];
+      return attachments
+        .map((att) => (att as Record<string, unknown> | null)?.documentId)
+        .filter((id): id is string => typeof id === "string");
+    });
+
+    const allDocumentIds = [...fileDocumentIds, ...textAttachmentDocumentIds];
+    const documentsById = allDocumentIds.length
       ? new Map(
           (
             await prisma.document.findMany({
-              where: { id: { in: fileDocumentIds } },
+              where: { id: { in: allDocumentIds } },
               select: { id: true, publicId: true, fileName: true, fileType: true },
             })
           ).map((doc) => [doc.id, doc])
@@ -296,6 +337,7 @@ export class ChatService {
         const rawMetadata = (msg.metadata as Record<string, unknown> | null) ?? null;
         const documentId = rawMetadata?.documentId;
         const doc = typeof documentId === "string" ? documentsById.get(documentId) : undefined;
+        const rawAttachments = rawMetadata?.attachments;
         const metadata = doc
           ? {
               ...rawMetadata,
@@ -304,6 +346,25 @@ export class ChatService {
                 fileUrl: rawMetadata?.fileUrl as string,
                 fileName: doc.fileName,
                 fileType: doc.fileType,
+              }),
+            }
+          : Array.isArray(rawAttachments)
+          ? {
+              ...rawMetadata,
+              attachments: rawAttachments.map((att) => {
+                const attRecord = att as Record<string, unknown>;
+                const attDoc =
+                  typeof attRecord.documentId === "string" ? documentsById.get(attRecord.documentId) : undefined;
+                if (!attDoc) return attRecord;
+                return {
+                  ...attRecord,
+                  fileUrl: getSignedDeliveryUrl({
+                    publicId: attDoc.publicId,
+                    fileUrl: attRecord.fileUrl as string,
+                    fileName: attDoc.fileName,
+                    fileType: attDoc.fileType,
+                  }),
+                };
               }),
             }
           : rawMetadata;
@@ -333,6 +394,7 @@ export class ChatService {
               picture: msg.bot.picture,
             }
           : null,
+        proposal: mapProposal(msg.postProposal),
         };
       }),
       nextCursor: hasMore
@@ -363,6 +425,41 @@ export class ChatService {
   }
 
   /**
+   * Recarrega uma mensagem POST_GENERATION_PROPOSAL já hidratada com a proposal
+   * e seus itens — usado depois de criar a mensagem de fechamento da tool
+   * `generateContentPosts` (a FK ChatPostProposal.chatMessageId só existe a
+   * partir desse ponto, não dava pra incluir no create).
+   */
+  static async getMessageWithProposal(messageId: string): Promise<MessageWithAuthor> {
+    const message = await prisma.chatMessage.findUniqueOrThrow({
+      where: { id: messageId },
+      include: {
+        author: { select: { id: true, name: true, email: true, picture: true } },
+        bot: { select: { id: true, name: true, picture: true } },
+        postProposal: { include: PROPOSAL_INCLUDE },
+      },
+    });
+
+    return {
+      id: message.id,
+      content: message.content,
+      type: message.type,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      isEdited: message.isEdited,
+      isDeleted: message.isDeleted,
+      isPinned: message.isPinned,
+      metadata: (message.metadata as Record<string, unknown> | null) ?? null,
+      author: message.author
+        ? { id: message.author.id, name: message.author.name, email: message.author.email, picture: message.author.picture }
+        : message.bot
+          ? { id: message.bot.id, name: message.bot.name, email: "", picture: message.bot.picture }
+          : null,
+      proposal: mapProposal(message.postProposal),
+    };
+  }
+
+  /**
    * Envia uma mensagem
    * @param userId - Pode ser vazio para mensagens de bot
    */
@@ -370,7 +467,7 @@ export class ChatService {
     input: CreateMessageInput,
     userId: string = ""
   ): Promise<MessageWithAuthor> {
-    const { content, type = MessageType.TEXT, channelId, botId } = input;
+    const { content, type, channelId, botId, attachmentDocumentIds } = input;
 
     // Verificar se o canal existe
     const channel = await this.getChannel(channelId);
@@ -400,7 +497,7 @@ export class ChatService {
       const message = await prisma.chatMessage.create({
         data: {
           content: content.trim(),
-          type: type || MessageType.BOT,
+          type: type ?? MessageType.BOT,
           botId,
           channelId,
         },
@@ -471,13 +568,41 @@ export class ChatService {
       throw new Error("Usuário não tem permissão para enviar mensagens");
     }
 
+    // Anexos existentes (documentos da empresa) referenciados nesta mensagem —
+    // ver comentário em CreateMessageInput: envio unificado com @menção de agente.
+    let attachmentsMetadata: Prisma.InputJsonValue[] | null = null;
+    if (attachmentDocumentIds && attachmentDocumentIds.length > 0) {
+      const documents = await prisma.document.findMany({
+        where: { id: { in: attachmentDocumentIds }, companyId: channel.room.companyId },
+      });
+      const documentsById = new Map(documents.map((doc) => [doc.id, doc]));
+      attachmentsMetadata = attachmentDocumentIds
+        .map((id) => documentsById.get(id))
+        .filter((doc): doc is NonNullable<typeof doc> => !!doc)
+        .map(
+          (doc): Prisma.InputJsonValue => ({
+            documentId: doc.id,
+            fileUrl: getSignedDeliveryUrl({
+              publicId: doc.publicId,
+              fileUrl: doc.fileUrl,
+              fileName: doc.fileName,
+              fileType: doc.fileType,
+            }),
+            fileName: doc.fileName,
+            fileType: doc.fileType,
+            fileSize: doc.fileSize,
+          })
+        );
+    }
+
     // Criar mensagem
     const message = await prisma.chatMessage.create({
       data: {
         content: content.trim(),
-        type,
+        type: type ?? MessageType.TEXT,
         authorId: userId,
         channelId,
+        metadata: attachmentsMetadata ? { attachments: attachmentsMetadata } : undefined,
       },
       include: {
         author: {
@@ -624,7 +749,114 @@ export class ChatService {
       return { message: updated, document: doc };
     });
 
+    const { documentAnalysisService } = await import("./document-analysis.service");
+    void documentAnalysisService
+      .enqueueForDocument(document.id, document.fileType)
+      .catch((error) => console.error("Erro ao enfileirar análise de documento:", error));
+
     await this.notifyOtherParticipants(channel, userId, message.author?.name || "Alguém", `📎 ${file.originalname}`);
+
+    return {
+      id: message.id,
+      content: message.content,
+      type: message.type,
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+      isEdited: message.isEdited,
+      isDeleted: message.isDeleted,
+      isPinned: message.isPinned,
+      metadata: message.metadata as Record<string, unknown>,
+      author: message.author
+        ? {
+            id: message.author.id,
+            name: message.author.name,
+            email: message.author.email,
+            picture: message.author.picture,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * Anexa um Document já existente (escolhido no modal "Documentos da
+   * empresa") como mensagem no canal — sem duplicar o arquivo, ao contrário
+   * de sendFileMessage (que faz upload de um novo arquivo).
+   */
+  static async attachExistingDocument(
+    channelId: string,
+    userId: string,
+    documentId: string,
+    caption?: string
+  ): Promise<MessageWithAuthor> {
+    const channel = await prisma.chatChannel.findUnique({
+      where: { id: channelId },
+      include: {
+        room: {
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            companyId: true,
+            categoryId: true,
+            workspaceId: true,
+          },
+        },
+      },
+    });
+    if (!channel) {
+      throw new Error("Canal não encontrado");
+    }
+
+    const isMember = await this.verifyCompanyMember(userId, channel.room.companyId);
+    if (!isMember) {
+      throw new Error("Usuário não é membro ativo da empresa");
+    }
+
+    let participant = await this.verifyParticipant(userId, channelId);
+    if (!participant) {
+      participant = await prisma.chatParticipant.create({
+        data: { userId, channelId, role: ChatRole.MEMBER },
+        include: {
+          user: { select: { id: true, name: true, email: true, picture: true } },
+        },
+      });
+    }
+    if (!this.canSendMessage(participant)) {
+      throw new Error("Usuário não tem permissão para enviar mensagens");
+    }
+
+    const document = await prisma.document.findFirst({
+      where: { id: documentId, companyId: channel.room.companyId },
+    });
+    if (!document) {
+      throw new Error("Documento não encontrado");
+    }
+
+    const message = await prisma.chatMessage.create({
+      data: {
+        content: caption?.trim() || document.fileName,
+        type: MessageType.FILE,
+        authorId: userId,
+        channelId,
+        metadata: {
+          documentId: document.id,
+          fileUrl: getSignedDeliveryUrl({
+            publicId: document.publicId,
+            fileUrl: document.fileUrl,
+            fileName: document.fileName,
+            fileType: document.fileType,
+          }),
+          fileName: document.fileName,
+          fileType: document.fileType,
+          fileSize: document.fileSize,
+        },
+      },
+      include: {
+        author: { select: { id: true, name: true, email: true, picture: true } },
+      },
+    });
+
+    await this.notifyOtherParticipants(channel, userId, message.author?.name || "Alguém", `📎 ${document.fileName}`);
 
     return {
       id: message.id,

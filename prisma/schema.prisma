@@ -24,31 +24,32 @@ model User {
   locale      String     @default("pt-BR")
   preferences Json       @default("{}")
 
-  twoFactor              TwoFactor[]
-  ownedCompanies         Company[]           @relation("CompanyOwner")
-  memberships            CompanyMember[]
-  chatMessages           ChatMessage[]
-  chatReadStates         ChatReadState[]
-  chatParticipants       ChatParticipant[]
-  createdScheduleEvents  ScheduleEvent[]     @relation("ScheduleEventCreator")
-  integrations           Integration[]
-  notifications          Notification[]
-  startedCallSessions    CallSession[]       @relation("CallSessionStarter")
-  transcriptSegments     TranscriptSegment[]
-  agentActionLogs        AgentActionLog[]
-  createdTasks           Task[]              @relation("TaskCreator")
-  assignedTasks          TaskAssignee[]      @relation("TaskAssignee")
-  watchedTasks           TaskWatcher[]       @relation("TaskWatcher")
-  taskComments           TaskComment[]       @relation("TaskCommentAuthor")
-  taskAttachments        TaskAttachment[]    @relation("TaskAttachmentUploader")
-  taskActivities         TaskActivity[]      @relation("TaskActivityActor")
-  createdFolders         Folder[]            @relation("FolderCreator")
-  uploadedDocuments      Document[]          @relation("DocumentUploader")
-  createdAgents          Agent[]
-  createdConversations   AgentConversation[]
-  createdPostTemplates   PostTemplate[]
-  createdPostGenerations PostGeneration[]
-  sentInvites            CompanyInvite[]
+  twoFactor                TwoFactor[]
+  ownedCompanies           Company[]           @relation("CompanyOwner")
+  memberships              CompanyMember[]
+  chatMessages             ChatMessage[]
+  chatReadStates           ChatReadState[]
+  chatParticipants         ChatParticipant[]
+  createdScheduleEvents    ScheduleEvent[]     @relation("ScheduleEventCreator")
+  integrations             Integration[]
+  notifications            Notification[]
+  startedCallSessions      CallSession[]       @relation("CallSessionStarter")
+  transcriptSegments       TranscriptSegment[]
+  agentActionLogs          AgentActionLog[]
+  createdTasks             Task[]              @relation("TaskCreator")
+  assignedTasks            TaskAssignee[]      @relation("TaskAssignee")
+  watchedTasks             TaskWatcher[]       @relation("TaskWatcher")
+  taskComments             TaskComment[]       @relation("TaskCommentAuthor")
+  taskAttachments          TaskAttachment[]    @relation("TaskAttachmentUploader")
+  taskActivities           TaskActivity[]      @relation("TaskActivityActor")
+  createdFolders           Folder[]            @relation("FolderCreator")
+  uploadedDocuments        Document[]          @relation("DocumentUploader")
+  createdAgents            Agent[]
+  createdConversations     AgentConversation[]
+  createdPostTemplates     PostTemplate[]
+  createdPostGenerations   PostGeneration[]
+  createdChatPostProposals ChatPostProposal[]
+  sentInvites              CompanyInvite[]
 
   @@map("users")
 }
@@ -71,9 +72,9 @@ model TwoFactor {
 }
 
 model Company {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(uuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
   title       String
   cnpj        String?  @unique
   picture     String?
@@ -100,6 +101,7 @@ model Company {
   knowledgeSearchLogs KnowledgeSearchLog[]
   postTemplates       PostTemplate[]
   postGenerations     PostGeneration[]
+  chatPostProposals   ChatPostProposal[]
   invites             CompanyInvite[]
 
   @@map("companies")
@@ -293,6 +295,7 @@ model ChatChannel {
   messages         ChatMessage[]
   chatReadStates   ChatReadState[]
   chatParticipants ChatParticipant[]
+  postProposals    ChatPostProposal[]
 
   @@unique([roomId])
   @@map("chat_channels")
@@ -371,6 +374,7 @@ model Agent {
 
   actionLogs           AgentActionLog[]
   conversationMessages AgentConversationMessage[]
+  chatPostProposals    ChatPostProposal[]
 
   @@index([companyId])
   @@index([kind])
@@ -453,6 +457,9 @@ model ChatMessage {
   /// quando a mensagem some (mesmo contrato do TaskAttachment).
   document Document?
 
+  /// Card de tabs com posts propostos quando type = POST_GENERATION_PROPOSAL.
+  postProposal ChatPostProposal?
+
   @@index([channelId, createdAt])
   @@index([channelId, isPinned])
   @@index([botId])
@@ -464,6 +471,75 @@ enum MessageType {
   SYSTEM
   BOT
   FILE
+  POST_GENERATION_PROPOSAL
+}
+
+// Card gerado por @menção a um agente com a tool `generateContentPosts`:
+// N posts propostos (tabs), cada um gerável individualmente e visível/clicável
+// por qualquer membro da sala (broadcast via socket, ver
+// CHAT_POST_PROPOSAL_ITEM_UPDATED em post-generation.service.ts).
+model ChatPostProposal {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  /// Denormalizado — worker do BullMQ notifica sem precisar de join até Room.
+  roomId String
+
+  channelId String
+  channel   ChatChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  /// Nulo enquanto a tool ainda não terminou de persistir os itens — setado
+  /// quando a ChatMessage de fechamento é criada logo em seguida.
+  chatMessageId String?      @unique
+  chatMessage   ChatMessage? @relation(fields: [chatMessageId], references: [id], onDelete: Cascade)
+
+  createdByUserId String
+  createdByUser   User   @relation(fields: [createdByUserId], references: [id])
+
+  agentId String?
+  agent   Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  /// Tarefa mencionada com #Task na mensagem que disparou a proposta.
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  /// Documentos anexados como referência (PDF/imagem) na mensagem que disparou a proposta.
+  attachments Document[] @relation("ChatPostProposalAttachments")
+
+  items ChatPostProposalItem[]
+
+  @@index([companyId, createdAt])
+  @@index([roomId])
+  @@map("chat_post_proposals")
+}
+
+// Um post individual dentro da proposta (uma tab). `postGenerationId` nulo =
+// ainda não gerado (status derivado = DRAFT); status real vem sempre do join
+// com PostGeneration.status, nunca duplicado aqui.
+model ChatPostProposalItem {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proposalId String
+  proposal   ChatPostProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  index   Int
+  title   String
+  details String
+
+  promptEn String
+  promptPt String
+
+  postGenerationId String?         @unique
+  postGeneration   PostGeneration? @relation(fields: [postGenerationId], references: [id], onDelete: SetNull)
+
+  @@unique([proposalId, index])
+  @@map("chat_post_proposal_items")
 }
 
 model ChatReadState {
@@ -677,11 +753,20 @@ model CallSession {
   startedById String
   startedBy   User   @relation("CallSessionStarter", fields: [startedById], references: [id])
 
+  // Reconexão rápida (todo mundo saiu e alguém voltou minutos depois) cria uma
+  // CallSession nova em vez de reabrir a antiga — sem isso a mesma reunião
+  // vira N sessões e N resumos picados. Aponta pra sessão raiz do cluster
+  // (a primeira); null quando a própria sessão é a raiz.
+  mergedIntoId String?
+  mergedInto   CallSession?  @relation("CallSessionMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   CallSession[] @relation("CallSessionMerge")
+
   transcriptSegments TranscriptSegment[]
   agentActionLogs    AgentActionLog[]
   meetingSummary     MeetingSummary?
 
   @@index([roomId, createdAt])
+  @@index([mergedIntoId])
   @@map("call_sessions")
 }
 
@@ -856,6 +941,9 @@ model Task {
   attachments TaskAttachment[]
   activities  TaskActivity[]
 
+  chatPostProposals ChatPostProposal[]
+  postGenerations   PostGeneration[]
+
   @@index([companyId, status])
   @@index([companyId, workspaceId])
   @@index([categoryId])
@@ -1012,6 +1100,15 @@ model Document {
   fileType  String?
   fileSize  Int?
 
+  /// Texto extraído (PDF/txt) ou descrição gerada por visão (imagem) — populado
+  /// assincronamente no upload por document-analysis.service.ts e reaproveitado
+  /// por qualquer consumidor (agente de chat, Gerador de Conteúdo) em vez de
+  /// reprocessar o arquivo a cada uso. `null` quando o tipo não é analisável
+  /// (docx, zip etc.) ou a análise ainda não rodou/terminou.
+  description    String?
+  analysisStatus PostAssetJobStatus?
+  analysisError  String?
+
   companyId   String
   company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   workspaceId String?
@@ -1048,6 +1145,9 @@ model Document {
 
   /// Documentos anexados como referência em gerações do Gerador de Conteúdo.
   postGenerationAttachments PostGeneration[] @relation("PostGenerationAttachments")
+
+  /// Documentos anexados como referência em propostas de posts geradas no chat.
+  chatPostProposalAttachments ChatPostProposal[] @relation("ChatPostProposalAttachments")
 
   @@index([companyId, folderId])
   @@index([companyId, workspaceId])
@@ -1190,6 +1290,11 @@ model PostGeneration {
   createdById String
   createdBy   User    @relation(fields: [createdById], references: [id])
 
+  /// Tarefa vinculada quando a geração veio de uma #menção de tarefa no chat
+  /// (contexto do título/descrição já foi injetado no prompt na hora da compose).
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
   prompt     String
   resultType PostResultType @default(IMAGE)
 
@@ -1210,6 +1315,10 @@ model PostGeneration {
   /// Document espelhado em Documentos → Gerador de Posts → Gerações quando a geração completa.
   document Document?
 
+  /// Item de proposta de post do chat que originou esta geração (1:1, nullable).
+  chatPostProposalItem ChatPostProposalItem?
+
   @@index([companyId, createdAt])
+  @@index([taskId])
   @@map("post_generations")
 }

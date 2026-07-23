@@ -7,6 +7,10 @@ export interface AgentContext {
   callSessionId: string | null;
   userId: string;
   companyId: string;
+  /** Tarefa mencionada com #Task na mensagem de chat que disparou a consulta (se houver). */
+  taskId?: string | null;
+  /** Documentos anexados na mensagem de chat que disparou a consulta (se houver). */
+  attachmentIds?: string[];
 }
 
 // Schema JSON Schema-like, aceito tanto pelo Anthropic (input_schema) quanto

@@ -2,7 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { prisma } from "../services/prisma.service";
 import { ChatService } from "../services/chat.service";
-import { MemberStatus } from "@prisma/client";
+import { MemberStatus, MeetingSummaryStatus } from "@prisma/client";
 
 export async function assertRoomAccess(roomId: string, userId: string) {
   const room = await prisma.room.findUnique({
@@ -97,6 +97,18 @@ export const listMyCallSessions = async (req: AuthRequest, res: Response) => {
     const hasMore = sessions.length > limit;
     const page = hasMore ? sessions.slice(0, limit) : sessions;
 
+    // Status do resumo já embutido aqui — evita 1 GET /summary por card na
+    // tela de transcrições (a lista já é a fonte da verdade, não precisa de
+    // N+1). Resolvido pela raiz do cluster (ver mergedIntoId).
+    const rootIds = Array.from(new Set(page.map((s) => s.mergedIntoId ?? s.id)));
+    const summaries = rootIds.length
+      ? await prisma.meetingSummary.findMany({
+          where: { callSessionId: { in: rootIds } },
+          select: { callSessionId: true, status: true },
+        })
+      : [];
+    const summaryStatusByRoot = new Map(summaries.map((sm) => [sm.callSessionId, sm.status]));
+
     return res.json({
       sessions: page.map((s) => {
         const fullText = s.transcriptSegments.map((seg) => seg.text).join(" ");
@@ -121,6 +133,7 @@ export const listMyCallSessions = async (req: AuthRequest, res: Response) => {
           wordCount,
           sizeBytes,
           participants: Array.from(participants.values()),
+          summaryStatus: summaryStatusByRoot.get(s.mergedIntoId ?? s.id) ?? null,
         };
       }),
       nextCursor: hasMore ? page[page.length - 1].id : null,
@@ -173,6 +186,79 @@ export const getMyCallSessionStats = async (req: AuthRequest, res: Response) => 
     });
   } catch (error) {
     console.error("Erro ao buscar stats de transcrições:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Lista os resumos de reunião (IA) já gerados pro usuário logado — pra
+ * sidebar da página de transcrições. Só sessões com resumo COMPLETED
+ * (PENDING/PROCESSING/FAILED ficam de fora, sem nada útil pra mostrar ali).
+ * GET /rooms/me/meeting-summaries
+ */
+export const listMyMeetingSummaries = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 50);
+
+    const where = await myCallSessionsWhere(userId);
+    if (!where) {
+      return res.json({ summaries: [] });
+    }
+
+    const summaries = await prisma.meetingSummary.findMany({
+      where: { status: MeetingSummaryStatus.COMPLETED, callSession: where },
+      include: {
+        callSession: {
+          include: {
+            room: {
+              select: {
+                id: true,
+                title: true,
+                type: true,
+                category: { select: { title: true, emoji: true } },
+              },
+            },
+            transcriptSegments: {
+              select: { userId: true, user: { select: { id: true, name: true, picture: true } } },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+
+    return res.json({
+      summaries: summaries.map((s) => {
+        const participants = new Map<string, { id: string; name: string; picture?: string | null }>();
+        for (const seg of s.callSession.transcriptSegments) {
+          if (seg.user && !participants.has(seg.user.id)) participants.set(seg.user.id, seg.user);
+        }
+        const durationMs = s.callSession.endedAt
+          ? s.callSession.endedAt.getTime() - s.callSession.createdAt.getTime()
+          : 0;
+
+        return {
+          id: s.id,
+          callSessionId: s.callSessionId,
+          roomId: s.callSession.roomId,
+          room: s.callSession.room,
+          createdAt: s.callSession.createdAt,
+          durationMs,
+          participants: Array.from(participants.values()),
+          summary: s.summary,
+          keywords: s.keywords,
+          generatedAt: s.updatedAt,
+        };
+      }),
+    });
+  } catch (error) {
+    console.error("Erro ao listar resumos de reunião:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

@@ -63,7 +63,7 @@ export const listMessages = async (req: AuthRequest, res: Response) => {
 export const sendMessage = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
-    const { content, type, channelId, botId } = req.body;
+    const { content, type, channelId, botId, attachmentDocumentIds } = req.body;
 
     if (!userId) {
       return res.status(401).json({ error: "Usuário não autenticado" });
@@ -79,11 +79,28 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "content não pode estar vazio" });
     }
 
+    let validAttachmentIds: string[] = [];
+    if (Array.isArray(attachmentDocumentIds) && attachmentDocumentIds.length > 0) {
+      const ids = attachmentDocumentIds.filter((id): id is string => typeof id === "string");
+      const channelForValidation = await ChatService.getChannel(channelId);
+      if (!channelForValidation) {
+        return res.status(404).json({ error: "Canal não encontrado" });
+      }
+      const count = await prisma.document.count({
+        where: { id: { in: ids }, companyId: channelForValidation.room.companyId },
+      });
+      if (count !== ids.length) {
+        return res.status(400).json({ error: "Um ou mais documentos anexados são inválidos" });
+      }
+      validAttachmentIds = ids;
+    }
+
     const input: CreateMessageInput = {
       content,
       type,
       channelId,
       botId,
+      attachmentDocumentIds: validAttachmentIds,
     };
 
     const message = await ChatService.sendMessage(input, userId);
@@ -108,7 +125,13 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
         // "@NomeDoAgente" numa mensagem humana aciona o agente associado à
         // categoria da sala — não bloqueia a resposta deste request.
         if (!botId) {
-          void maybeTriggerAgentMention({ io, channel, content, userId }).catch((error) => {
+          void maybeTriggerAgentMention({
+            io,
+            channel,
+            content,
+            userId,
+            attachmentIds: validAttachmentIds,
+          }).catch((error) => {
             console.error("Erro ao acionar agente mencionado no chat:", error);
           });
 
@@ -189,6 +212,33 @@ export const uploadChatAttachment = async (req: AuthRequest, res: Response) => {
             roomId: channel.roomId,
             message,
           });
+
+        // Legenda pode mencionar "@Agente"/"@Usuário" igual a uma mensagem de texto —
+        // o próprio arquivo que acabou de ser anexado nesta mensagem vira
+        // ctx.attachmentIds pro agente (ver system-prompt.ts/agent-service.ts).
+        if (caption) {
+          const attachedDocumentId = (message.metadata as Record<string, unknown> | null)?.documentId;
+          void maybeTriggerAgentMention({
+            io,
+            channel,
+            content: caption,
+            userId,
+            attachmentIds: typeof attachedDocumentId === "string" ? [attachedDocumentId] : undefined,
+          }).catch((error) => {
+            console.error("Erro ao acionar agente mencionado no chat:", error);
+          });
+
+          void notifyMentionedUsers({
+            io,
+            channel,
+            content: caption,
+            messageId: message.id,
+            authorId: userId,
+            authorName: message.author?.name || "Alguém",
+          }).catch((error) => {
+            console.error("Erro ao notificar usuário mencionado no chat:", error);
+          });
+        }
       }
     } catch (error) {
       console.error("Erro ao emitir evento WebSocket:", error);
@@ -197,6 +247,86 @@ export const uploadChatAttachment = async (req: AuthRequest, res: Response) => {
     return res.status(201).json({ message });
   } catch (error: any) {
     console.error("Erro ao enviar arquivo no chat:", error);
+    if (
+      error.message.includes("não encontrado") ||
+      error.message.includes("não é membro") ||
+      error.message.includes("não tem permissão")
+    ) {
+      return res.status(403).json({ error: error.message });
+    }
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Anexa um documento já existente (escolhido no modal "Documentos da
+ * empresa") como mensagem no canal
+ * POST /chat/channels/:channelId/attachments/existing
+ */
+export const attachExistingChatDocument = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { channelId } = req.params;
+    const { documentId, content } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    if (!documentId || typeof documentId !== "string") {
+      return res.status(400).json({ error: "documentId é obrigatório" });
+    }
+
+    const caption = typeof content === "string" ? content : undefined;
+
+    const message = await ChatService.attachExistingDocument(channelId, userId, documentId, caption);
+
+    try {
+      const wsServer = WebSocketServer.getInstance();
+      const io = wsServer.getIO();
+      const channel = await ChatService.getChannel(channelId);
+      if (channel) {
+        io.to(channel.roomId)
+          .to(`company:${channel.room.companyId}`)
+          .emit("NEW_MESSAGE", {
+            channelId,
+            roomId: channel.roomId,
+            message,
+          });
+
+        // Legenda pode mencionar "@Agente"/"@Usuário" igual a uma mensagem de texto —
+        // o próprio documento anexado nesta mensagem vira ctx.attachmentIds pro
+        // agente (ver system-prompt.ts/agent-service.ts).
+        if (caption) {
+          void maybeTriggerAgentMention({
+            io,
+            channel,
+            content: caption,
+            userId,
+            attachmentIds: [documentId],
+          }).catch((error) => {
+            console.error("Erro ao acionar agente mencionado no chat:", error);
+          });
+
+          void notifyMentionedUsers({
+            io,
+            channel,
+            content: caption,
+            messageId: message.id,
+            authorId: userId,
+            authorName: message.author?.name || "Alguém",
+          }).catch((error) => {
+            console.error("Erro ao notificar usuário mencionado no chat:", error);
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Erro ao emitir evento WebSocket:", error);
+    }
+
+    return res.status(201).json({ message });
+  } catch (error: any) {
+    console.error("Erro ao anexar documento existente no chat:", error);
     if (
       error.message.includes("não encontrado") ||
       error.message.includes("não é membro") ||

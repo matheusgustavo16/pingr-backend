@@ -55,7 +55,7 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
 
     const folder = await ensureTaskAttachmentsFolder(companyId, userId);
 
-    const attachment = await prisma.$transaction(async (tx) => {
+    const { attachment, document } = await prisma.$transaction(async (tx) => {
       const created = await tx.taskAttachment.create({
         data: {
           taskId: task.id,
@@ -70,7 +70,7 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
       });
 
       // Espelha o mesmo arquivo em Documentos (pasta "Anexos de tarefas").
-      await tx.document.create({
+      const doc = await tx.document.create({
         data: {
           fileName: created.fileName,
           fileUrl: created.fileUrl,
@@ -85,8 +85,13 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      return created;
+      return { attachment: created, document: doc };
     });
+
+    const { documentAnalysisService } = await import("../services/document-analysis.service");
+    void documentAnalysisService
+      .enqueueForDocument(document.id, document.fileType)
+      .catch((error) => console.error("Erro ao enfileirar análise de documento:", error));
 
     await logActivity(task.id, TaskActivityType.ATTACHMENT_ADDED, userId, undefined, {
       attachmentId: attachment.id,

@@ -270,6 +270,13 @@ export const composeGeneration = async (req: AuthRequest, res: Response) => {
 
     const attachmentAnalyses = await Promise.all(
       attachments.map(async (doc): Promise<string | null> => {
+        // Documento já analisado no upload (document-analysis.service.ts) — reaproveita
+        // em vez de reprocessar o arquivo a cada composição.
+        if (doc.analysisStatus === "COMPLETED" && doc.description) {
+          const label = doc.fileType?.startsWith("image/") ? "Imagem anexada" : "Documento anexado";
+          return `${label} "${doc.fileName}": ${doc.description}`;
+        }
+
         // Anexos "raw" (PDF, docx etc) foram upados como private no Cloudinary — a
         // fileUrl crua 401. Precisa assinar antes de baixar o conteúdo pra análise.
         const signedUrl = getSignedDeliveryUrl({
@@ -279,18 +286,29 @@ export const composeGeneration = async (req: AuthRequest, res: Response) => {
           fileType: doc.fileType,
         });
         try {
+          let description: string | null = null;
+          let label: string | null = null;
           if (doc.fileType?.startsWith("image/")) {
-            return `Imagem anexada "${doc.fileName}": ${await analyzeImageReference(signedUrl, imageAnalysisProvider)}`;
+            label = "Imagem anexada";
+            description = await analyzeImageReference(signedUrl, imageAnalysisProvider);
+          } else if (doc.fileType === "application/pdf") {
+            label = "Documento anexado";
+            description = await analyzePdfReference(signedUrl);
+          } else if (doc.fileType?.startsWith("text/")) {
+            label = "Documento anexado";
+            description = await fetchTextReference(signedUrl);
+          } else {
+            // Tipo sem análise automática (docx, zip etc) — não vira matéria-prima pro
+            // prompt, só logado; não faz sentido mandar "não influencia" pro compositor.
+            return null;
           }
-          if (doc.fileType === "application/pdf") {
-            return `Documento anexado "${doc.fileName}": ${await analyzePdfReference(signedUrl)}`;
-          }
-          if (doc.fileType?.startsWith("text/")) {
-            return `Documento anexado "${doc.fileName}": ${await fetchTextReference(signedUrl)}`;
-          }
-          // Tipo sem análise automática (docx, zip etc) — não vira matéria-prima pro
-          // prompt, só logado; não faz sentido mandar "não influencia" pro compositor.
-          return null;
+
+          // Preenche o cache pra próxima consulta não precisar reprocessar.
+          await prisma.document
+            .update({ where: { id: doc.id }, data: { description, analysisStatus: "COMPLETED", analysisError: null } })
+            .catch((error) => console.error(`[post-generator] falha ao cachear análise do anexo ${doc.id}:`, error));
+
+          return `${label} "${doc.fileName}": ${description}`;
         } catch (error) {
           console.error(`[post-generator] falha ao analisar anexo ${doc.id}:`, error);
           return null;
@@ -329,7 +347,10 @@ export const createGeneration = async (req: AuthRequest, res: Response) => {
         companyId: companyId,
         createdById: userId,
         prompt,
-        replicateModel: process.env.REPLICATE_IMAGE_MODEL || "google/nano-banana",
+        replicateModel:
+          process.env.IMAGE_PROVIDER === "replicate"
+            ? process.env.REPLICATE_IMAGE_MODEL || "google/nano-banana"
+            : process.env.GOOGLE_AI_IMAGE_MODEL || "gemini-3-pro-image",
         status: PostAssetJobStatus.PENDING,
         templates: { connect: templateIds.map((id) => ({ id })) },
         attachments: { connect: attachmentIds.map((id) => ({ id })) },

@@ -14,6 +14,13 @@ const transports = new Map<
 const producers = new Map<string, Map<string, mediasoup.types.Producer>>(); // socketId -> producerId -> Producer
 const consumers = new Map<string, Map<string, mediasoup.types.Consumer>>(); // socketId -> consumerId -> Consumer
 
+// Grace period antes de fechar a CallSession quando a sala cai pra <2
+// pessoas com áudio — evita cortar a reunião por um blip curto (queda de
+// rede, reconexão, mutar por engano). Se alguém volta a 2+ antes de expirar,
+// o timer é cancelado e a call segue de onde parou; nada é tocado até então.
+const CALL_END_GRACE_MS = 60_000;
+const roomEndGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 // Usuários com producer de áudio (mic, não screen-share) ativo numa sala —
 // é a contagem que decide se a transcrição deve rodar (só com 2+ pessoas).
 function getRoomAudioProducerUserIds(
@@ -36,14 +43,17 @@ function getRoomAudioProducerUserIds(
   return userIds;
 }
 
-// Reavalia a transcrição de uma sala inteira: anexa todo mundo se há 2+
-// pessoas com áudio ativo, ou desanexa todo mundo se sobrou só 1 (ou 0).
-// Idempotente — attachToProducer/detachFromProducer já são no-op se repetidos.
-async function syncTranscriptionForRoom(io: SocketIOServer, roomId: string) {
-  const shouldTranscribe = getRoomAudioProducerUserIds(io, roomId).size >= 2;
-  const manager = await MediasoupManager.getInstance();
+// Encerra de fato a call: desanexa os pipelines de áudio que sobraram na
+// sala e, se não houver mais nenhum ativo, fecha a CallSession e dispara o
+// pipeline de resumo. Só roda depois que o grace period expira sem ninguém
+// ter voltado.
+async function finalizeRoomAfterGrace(io: SocketIOServer, roomId: string) {
+  roomEndGraceTimers.delete(roomId);
 
-  for (const [socketId, socketProducers] of producers) {
+  // Reavalia — pode ter voltado gente entre o timer disparar e aqui rodar.
+  if (getRoomAudioProducerUserIds(io, roomId).size >= 2) return;
+
+  for (const socketProducers of producers.values()) {
     for (const producer of socketProducers.values()) {
       if (
         producer.kind !== "audio" ||
@@ -52,8 +62,47 @@ async function syncTranscriptionForRoom(io: SocketIOServer, roomId: string) {
       ) {
         continue;
       }
+      await transcriptionPipeline.detachFromProducer(producer.id);
+    }
+  }
 
-      if (shouldTranscribe) {
+  if (!transcriptionPipeline.hasActivePipelineForRoom(roomId)) {
+    const closedSessionIds = await callSessionService.endActive(roomId);
+    for (const callSessionId of closedSessionIds) {
+      meetingSummaryService
+        .enqueueForCallSession(callSessionId)
+        .catch((err) =>
+          console.error("Erro ao enfileirar resumo da reunião:", err)
+        );
+    }
+  }
+}
+
+// Reavalia a transcrição de uma sala inteira: anexa todo mundo se há 2+
+// pessoas com áudio ativo. Se sobrou só 1 (ou 0), NÃO desanexa/encerra na
+// hora — agenda o grace period (CALL_END_GRACE_MS); se a sala voltar a ter
+// 2+ antes de expirar, o timer é cancelado e nada é tocado.
+// Idempotente — attachToProducer já é no-op se repetido.
+async function syncTranscriptionForRoom(io: SocketIOServer, roomId: string) {
+  const shouldTranscribe = getRoomAudioProducerUserIds(io, roomId).size >= 2;
+
+  if (shouldTranscribe) {
+    const pendingTimer = roomEndGraceTimers.get(roomId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      roomEndGraceTimers.delete(roomId);
+    }
+
+    const manager = await MediasoupManager.getInstance();
+    for (const [socketId, socketProducers] of producers) {
+      for (const producer of socketProducers.values()) {
+        if (
+          producer.kind !== "audio" ||
+          producer.appData?.source === "screen" ||
+          producer.appData?.roomId !== roomId
+        ) {
+          continue;
+        }
         const userId = (io.sockets.sockets.get(socketId) as any)?.user?.id;
         if (!userId) continue;
         const router = await manager.getOrCreateRouter(roomId);
@@ -62,18 +111,17 @@ async function syncTranscriptionForRoom(io: SocketIOServer, roomId: string) {
           .catch((err) =>
             console.error("Erro ao anexar pipeline de transcrição:", err)
           );
-      } else {
-        await transcriptionPipeline.detachFromProducer(producer.id);
       }
     }
+    return;
   }
 
-  if (!transcriptionPipeline.hasActivePipelineForRoom(roomId)) {
-    const closedSessionIds = await callSessionService.endActive(roomId);
-    for (const callSessionId of closedSessionIds) {
-      meetingSummaryService.enqueueForCallSession(callSessionId);
-    }
-  }
+  if (roomEndGraceTimers.has(roomId)) return;
+
+  const timer = setTimeout(() => {
+    void finalizeRoomAfterGrace(io, roomId);
+  }, CALL_END_GRACE_MS);
+  roomEndGraceTimers.set(roomId, timer);
 }
 
 export const handleMediasoupEvents = async (

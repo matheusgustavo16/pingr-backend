@@ -9,6 +9,7 @@ import { updateTaskTool } from "./update-task.tool";
 import { createFolderTool } from "./create-folder.tool";
 import { manageAgentTool } from "./manage-agent.tool";
 import { searchKnowledgeBaseTool } from "./search-knowledge-base.tool";
+import { generateContentPostsTool } from "./generate-content-posts.tool";
 import type { ToolDef } from "./types";
 
 export const agentTools: ToolDef[] = [
@@ -23,6 +24,7 @@ export const agentTools: ToolDef[] = [
   createFolderTool,
   manageAgentTool,
   searchKnowledgeBaseTool,
+  generateContentPostsTool,
 ];
 
 export type { ToolDef, AgentContext } from "./types";

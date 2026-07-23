@@ -9,6 +9,17 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Extrai o id da tarefa marcada via chip `#Título` estruturado (`data-task-id`
+ *  no span `.chat-task-mention` inserido pelo MessageEditor). Só o primeiro é
+ *  usado — hoje só existe um slot de tarefa vinculada por proposta gerada. */
+function extractMentionedTaskId(content: string): string | null {
+  const spanRegex = /<span\b[^>]*class="chat-task-mention"[^>]*>/i;
+  const match = content.match(spanRegex);
+  if (!match) return null;
+  const idMatch = match[0].match(/data-task-id="([^"]*)"/i);
+  return idMatch?.[1] ?? null;
+}
+
 /** "@Nome Completo" ou "@Primeironome", com \b pra não casar "@analytics" com agente "Ana". */
 function mentionsAgent(content: string, agentName: string): boolean {
   const fullName = escapeRegex(agentName);
@@ -29,8 +40,10 @@ export async function maybeTriggerAgentMention(params: {
   channel: ChatChannelInfo;
   content: string;
   userId: string;
+  /** Documentos anexados na mesma mensagem — repassado pra tools que usam referência (ex: generateContentPosts). */
+  attachmentIds?: string[];
 }): Promise<void> {
-  const { io, channel, content, userId } = params;
+  const { io, channel, content, userId, attachmentIds } = params;
   if (!content.includes("@")) return;
 
   const room = await prisma.room.findUnique({
@@ -53,6 +66,18 @@ export async function maybeTriggerAgentMention(params: {
 
   const callSessionId = await callSessionService.getActiveId(channel.roomId);
 
+  // Confere que a tarefa mencionada (se houver) é de fato da empresa antes de
+  // repassar pra tool — não confia cegamente em `data-task-id` vindo do client.
+  const mentionedTaskId = extractMentionedTaskId(content);
+  const taskId = mentionedTaskId
+    ? (
+        await prisma.task.findFirst({
+          where: { id: mentionedTaskId, companyId: channel.room.companyId },
+          select: { id: true },
+        })
+      )?.id ?? null
+    : null;
+
   // Indicador de "digitando" — a resposta do LLM demora alguns segundos;
   // sem isso a mensagem parece surgir do nada. Emite pro roomId (chat aberto)
   // igual ao NEW_MESSAGE, e sempre limpa no final (sucesso ou erro).
@@ -66,7 +91,15 @@ export async function maybeTriggerAgentMention(params: {
   try {
     await runAgentQueryAndRespond({
       io,
-      ctx: { roomId: channel.roomId, callSessionId, userId, companyId: channel.room.companyId },
+      ctx: {
+        roomId: channel.roomId,
+        channelId: channel.id,
+        callSessionId,
+        userId,
+        companyId: channel.room.companyId,
+        taskId,
+        attachmentIds,
+      },
       agentId: matched.id,
       message: content,
       trigger: AgentTriggerType.CHAT_MESSAGE,

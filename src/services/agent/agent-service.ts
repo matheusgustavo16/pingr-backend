@@ -1,5 +1,5 @@
 import { Server as SocketIOServer } from "socket.io";
-import { Agent, AgentActionStatus, AgentKind, AgentTriggerType } from "@prisma/client";
+import { Agent, AgentActionStatus, AgentKind, AgentTriggerType, MessageType } from "@prisma/client";
 import type { AgentContext } from "./tools";
 import { agentTools } from "./tools";
 import { agentActionLogService } from "./agent-action-log.service";
@@ -70,11 +70,39 @@ export async function runAgentQuery(
   const agent = await resolveAgent(params.agentId, params.ctx.companyId);
   const ctx: AgentContext = { ...params.ctx, agentId: agent.id };
 
+  // Tarefa (#Título) e/ou documentos anexados na mensagem de chat que
+  // disparou a consulta — resolvidos aqui (fora de qualquer tool) pra virar
+  // contexto no prompt mesmo quando o agente responde direto, sem chamar
+  // nenhuma ferramenta (ex: "o que fala esse PDF?").
+  const [mentionedTask, attachedDocuments] = await Promise.all([
+    ctx.taskId
+      ? prisma.task.findFirst({
+          where: { id: ctx.taskId, companyId: ctx.companyId },
+          select: { title: true, description: true, status: true },
+        })
+      : Promise.resolve(null),
+    ctx.attachmentIds && ctx.attachmentIds.length > 0
+      ? prisma.document.findMany({
+          where: { id: { in: ctx.attachmentIds }, companyId: ctx.companyId },
+          select: { fileName: true, description: true, analysisStatus: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
   const tools = agentTools.filter((t) => agent.allowedTools.includes(t.name));
   const provider = getAgentProvider(agent.provider);
   const system = buildSystemPrompt(ctx, agent, {
     hasHistory: !!params.history?.length,
     documentContext: params.documentContext,
+    taskContext: mentionedTask
+      ? { title: mentionedTask.title, description: mentionedTask.description, status: mentionedTask.status }
+      : undefined,
+    attachedDocuments: attachedDocuments.length
+      ? attachedDocuments.map((d) => ({
+          fileName: d.fileName,
+          description: d.analysisStatus === "COMPLETED" ? d.description : null,
+        }))
+      : undefined,
   });
 
   console.log(
@@ -100,7 +128,7 @@ export async function runAgentQuery(
  */
 export async function runAndLogAgentQuery(
   params: RunAgentQueryParams
-): Promise<{ agent: Agent; output: string; logId: string }> {
+): Promise<{ agent: Agent; output: string; logId: string; toolName: string | null; toolResult: unknown }> {
   const { ctx, message, trigger } = params;
   if (!ctx.roomId) {
     // AgentActionLog.roomId é obrigatório — este caminho é só para o fluxo
@@ -126,7 +154,13 @@ export async function runAndLogAgentQuery(
       status: AgentActionStatus.SUCCESS,
     });
 
-    return { agent: result.agent, output: result.output, logId: entry.id };
+    return {
+      agent: result.agent,
+      output: result.output,
+      logId: entry.id,
+      toolName: result.toolName,
+      toolResult: result.toolResult,
+    };
   } catch (err: any) {
     const errorMessage = err?.message || "Erro desconhecido ao consultar o agente";
     const fallbackOutput =
@@ -147,7 +181,7 @@ export async function runAndLogAgentQuery(
       errorMessage,
     });
 
-    return { agent: agent as Agent, output: fallbackOutput, logId: entry.id };
+    return { agent: agent as Agent, output: fallbackOutput, logId: entry.id, toolName: null, toolResult: null };
   }
 }
 
@@ -165,7 +199,12 @@ export async function runAgentQueryAndRespond(params: {
   trigger: AgentTriggerType;
 }): Promise<{ output: string; logId: string; messageId: string | null }> {
   const { io, ctx, agentId, message, trigger } = params;
-  const { agent, output, logId } = await runAndLogAgentQuery({ ctx, agentId, message, trigger });
+  const { agent, output, logId, toolName, toolResult } = await runAndLogAgentQuery({
+    ctx,
+    agentId,
+    message,
+    trigger,
+  });
 
   let messageId: string | null = null;
   if (!ctx.roomId) return { output, logId, messageId };
@@ -178,14 +217,32 @@ export async function runAgentQueryAndRespond(params: {
         : null;
       const resolvedBot = bot ?? (await ChatService.getSystemAgentBot());
 
+      const proposalId =
+        toolName === "generateContentPosts" &&
+        toolResult &&
+        typeof toolResult === "object" &&
+        typeof (toolResult as any).proposalId === "string"
+          ? (toolResult as any).proposalId
+          : null;
+
       const chatMessage = await ChatService.sendMessage({
         content: output,
         channelId: channel.id,
         botId: resolvedBot.id,
+        type: proposalId ? MessageType.POST_GENERATION_PROPOSAL : undefined,
       });
       messageId = chatMessage.id;
 
-      io.to(ctx.roomId).emit("NEW_MESSAGE", { channelId: channel.id, message: chatMessage });
+      if (proposalId) {
+        await prisma.chatPostProposal.update({
+          where: { id: proposalId },
+          data: { chatMessageId: chatMessage.id },
+        });
+      }
+
+      const fullMessage = proposalId ? await ChatService.getMessageWithProposal(chatMessage.id) : chatMessage;
+
+      io.to(ctx.roomId).emit("NEW_MESSAGE", { channelId: channel.id, message: fullMessage });
       io.to(ctx.roomId).emit("AGENT_RESPONSE", {
         roomId: ctx.roomId,
         callSessionId: ctx.callSessionId,

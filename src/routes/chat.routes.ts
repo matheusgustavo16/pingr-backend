@@ -12,7 +12,9 @@ import {
   getUnreadCounts,
   getLinkPreview,
   uploadChatAttachment,
+  attachExistingChatDocument,
 } from "../controllers/chat.controller";
+import { generateProposalItem } from "../controllers/chat-post-proposal.controller";
 import { authenticate } from "../middleware/auth.middleware";
 import { uploadAny } from "../middleware/upload.middleware";
 
@@ -25,6 +27,16 @@ router.post(
   authenticate,
   uploadAny.single("file"),
   uploadChatAttachment
+);
+router.post(
+  "/channels/:channelId/attachments/existing",
+  authenticate,
+  attachExistingChatDocument
+);
+router.post(
+  "/post-proposals/:proposalId/items/:itemId/generate",
+  authenticate,
+  generateProposalItem
 );
 router.put("/messages/:messageId", authenticate, editMessage);
 router.delete("/messages/:messageId", authenticate, deleteMessage);

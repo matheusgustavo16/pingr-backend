@@ -2,9 +2,18 @@ import { Queue, Worker, Job } from "bullmq";
 import { PostAssetJobStatus } from "@prisma/client";
 import { prisma } from "../prisma.service";
 import { createRedisConnection } from "../knowledge/redis-connection";
-import { generateImage } from "../replicate.service";
+import { generateImage as generateImageReplicate } from "../replicate.service";
+import { generateImage as generateImageGemini } from "../gemini.service";
 import { uploadImageFromUrl } from "../cloudinary.service";
 import { ensurePostGeneratorGenerationsFolder } from "../document.service";
+import { notifyProposalItemStatusChange } from "../chat/chat-post-proposal-notify.service";
+import { notifyPostGenerationStatusChange } from "./post-generation-notify.service";
+
+/** "gemini" (Nano Banana Pro, default) ou "replicate". */
+function getGenerateImage() {
+  const provider = process.env.IMAGE_PROVIDER || "gemini";
+  return provider === "replicate" ? generateImageReplicate : generateImageGemini;
+}
 
 /** Primeira linha não vazia do prompt, sem o prefixo de contexto (Formato/Tom/Idioma), pro nome do arquivo. */
 function fileNameFromPrompt(prompt: string): string {
@@ -51,7 +60,7 @@ async function processJob(job: Job<GenerationJobPayload>): Promise<void> {
     .filter((doc) => doc.fileType?.startsWith("image/"))
     .map((doc) => doc.fileUrl);
   const referenceImageUrls = [...generation.templates.map((t) => t.fileUrl), ...imageAttachmentUrls];
-  const { outputUrls, model } = await generateImage({ prompt: generation.prompt, referenceImageUrls });
+  const { outputUrls, model } = await getGenerateImage()({ prompt: generation.prompt, referenceImageUrls });
 
   const { url, publicId, fileSize } = await uploadImageFromUrl(
     outputUrls[0],
@@ -82,6 +91,9 @@ async function processJob(job: Job<GenerationJobPayload>): Promise<void> {
       },
     },
   });
+
+  await notifyProposalItemStatusChange(generationId);
+  await notifyPostGenerationStatusChange(generationId);
 }
 
 function getWorker(): Worker<GenerationJobPayload> {
@@ -99,6 +111,8 @@ function getWorker(): Worker<GenerationJobPayload> {
           data: { status: PostAssetJobStatus.FAILED, errorMessage: err?.message || "Erro desconhecido" },
         })
         .catch(() => {});
+      await notifyProposalItemStatusChange(job.data.generationId).catch(() => {});
+      await notifyPostGenerationStatusChange(job.data.generationId).catch(() => {});
     });
   }
   return worker;

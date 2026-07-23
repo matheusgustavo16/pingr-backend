@@ -24,6 +24,7 @@ import { WebSocketServer } from "./ws/socket-server";
 import { knowledgeEmbeddingService } from "./services/knowledge/knowledge-embedding.service";
 import { postTemplateService } from "./services/post-template/post-template.service";
 import { postGenerationService } from "./services/post-generation/post-generation.service";
+import { documentAnalysisService } from "./services/document-analysis.service";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -74,6 +75,12 @@ try {
   postGenerationService.startWorker();
 } catch (err: any) {
   console.warn(`[post-generator] workers não iniciados: ${err?.message}`);
+}
+
+try {
+  documentAnalysisService.startWorker();
+} catch (err: any) {
+  console.warn(`[document-analysis] worker não iniciado: ${err?.message}`);
 }
 
 httpServer.listen(port, () => {
