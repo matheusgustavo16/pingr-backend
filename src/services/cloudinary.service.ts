@@ -96,10 +96,17 @@ export interface UploadFileResult {
   fileSize: number;
 }
 
-function resourceTypeForMime(mimeType?: string): "image" | "video" | "raw" {
+export function resourceTypeForMime(mimeType?: string): "image" | "video" | "raw" {
   if (mimeType?.startsWith("image/")) return "image";
   if (mimeType?.startsWith("video/") || mimeType?.startsWith("audio/")) return "video";
   return "raw";
+}
+
+/** Extensão do arquivo (sem ponto), a partir do nome original — usada como
+ *  `format` na Admin API de download. Cai pra "bin" se não achar extensão. */
+function extensionFromFileName(fileName?: string): string {
+  const match = fileName?.match(/\.([a-zA-Z0-9]+)$/);
+  return match ? match[1].toLowerCase() : "bin";
 }
 
 /**
@@ -122,11 +129,18 @@ export async function uploadFile(
   fileName?: string,
   mimeType?: string
 ): Promise<UploadFileResult> {
+  const resourceType = mimeType ? resourceTypeForMime(mimeType) : "auto";
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder,
-        resource_type: mimeType ? resourceTypeForMime(mimeType) : "auto",
+        resource_type: resourceType,
+        // Cloudinary bloqueia entrega pública do arquivo original pra
+        // contas novas/não verificadas (401 "deny or ACL failure" /
+        // "show_original_customer_untrusted"), então todo arquivo "raw"
+        // (PDF, docx, zip etc — não imagem/vídeo) sobe como "private" e é
+        // servido via URL assinada da Admin API (getSignedDeliveryUrl abaixo).
+        ...(resourceType === "raw" ? { type: "private" as const } : {}),
         use_filename: Boolean(fileName),
         unique_filename: true,
         filename_override: fileName,
@@ -153,23 +167,100 @@ export async function uploadFile(
 }
 
 /**
+ * Sobe uma imagem pro Cloudinary a partir de uma URL remota (ex: output do
+ * Replicate) — o Cloudinary busca o conteúdo direto, sem precisar baixar o
+ * buffer manualmente no processo Node.
+ */
+export async function uploadImageFromUrl(sourceUrl: string, folder: string): Promise<UploadFileResult> {
+  const result = await cloudinary.uploader.upload(sourceUrl, {
+    folder,
+    resource_type: "image",
+  });
+  return {
+    url: result.secure_url,
+    publicId: result.public_id,
+    fileType: result.resource_type || "image",
+    fileSize: result.bytes || 0,
+  };
+}
+
+/**
  * Deleta um arquivo genérico do Cloudinary. Como resource_type não é persistido
- * junto ao anexo, tenta nos tipos possíveis até conseguir remover.
+ * junto ao anexo, tenta nos tipos possíveis até conseguir remover. Recursos
+ * "raw" sobem como delivery type "private" (ver uploadFile) — sem o `type`
+ * certo o destroy não acha o recurso, por isso cada resource_type tenta
+ * também as variações de `type`.
  */
 export async function deleteFile(publicId: string, mimeType?: string): Promise<void> {
   const preferredType = resourceTypeForMime(mimeType);
-  const typesToTry = Array.from(
+  const resourceTypesToTry = Array.from(
     new Set([preferredType, "raw", "image", "video"] as const)
   );
 
-  for (const resource_type of typesToTry) {
-    try {
-      const result = await cloudinary.uploader.destroy(publicId, { resource_type });
-      if (result?.result === "ok") {
-        return;
+  for (const resource_type of resourceTypesToTry) {
+    const deliveryTypesToTry = resource_type === "raw" ? (["private", "upload"] as const) : (["upload"] as const);
+    for (const type of deliveryTypesToTry) {
+      try {
+        const result = await cloudinary.uploader.destroy(publicId, { resource_type, type });
+        if (result?.result === "ok") {
+          return;
+        }
+      } catch (error) {
+        console.error(`Erro ao deletar arquivo do Cloudinary (${resource_type}/${type}):`, error);
       }
-    } catch (error) {
-      console.error(`Erro ao deletar arquivo do Cloudinary (${resource_type}):`, error);
     }
   }
+}
+
+/**
+ * Migra um recurso "raw" já enviado como delivery type "upload" (público,
+ * hoje bloqueado) pro tipo "private" — usado pelo script de migração
+ * (scripts/migrate-raw-to-private.ts) pra destravar arquivos enviados antes
+ * do fix. Idempotente: se já estiver "private" (ou não existir mais no
+ * Cloudinary), retorna o status em vez de derrubar o batch inteiro.
+ */
+export async function migrateRawResourceToPrivate(
+  publicId: string
+): Promise<{ status: "migrated" | "already-private" | "not-found" | "error"; detail?: string }> {
+  try {
+    await cloudinary.uploader.rename(publicId, publicId, {
+      resource_type: "raw",
+      type: "upload",
+      to_type: "private",
+      overwrite: true,
+    });
+    return { status: "migrated" };
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    if (/not found/i.test(message)) {
+      // Ou já não existe, ou já foi movido pra "private" antes (rename com
+      // `type: "upload"` não acha mais o recurso na origem).
+      return { status: "already-private", detail: message };
+    }
+    return { status: "error", detail: message };
+  }
+}
+
+/**
+ * URL de entrega do arquivo pro frontend. Imagem/vídeo continuam servidos
+ * pelo CDN público normal (não afetado pelo bloqueio). Arquivos "raw" (PDF,
+ * docx, zip etc) foram upados como delivery type "private" — a única forma
+ * confirmada de driblar o bloqueio de conta é gerar a URL de download
+ * assinada via Admin API (domínio api.cloudinary.com, não res.cloudinary.com).
+ */
+export function getSignedDeliveryUrl(params: {
+  publicId: string;
+  fileUrl: string;
+  fileName?: string | null;
+  fileType?: string | null;
+}): string {
+  const { publicId, fileUrl, fileName, fileType } = params;
+  const resourceType = resourceTypeForMime(fileType ?? undefined);
+  if (resourceType !== "raw") return fileUrl;
+
+  const format = extensionFromFileName(fileName ?? undefined);
+  return cloudinary.utils.private_download_url(publicId, format, {
+    resource_type: "raw",
+    type: "private",
+  });
 }

@@ -3,7 +3,7 @@ import { TaskActivityType } from "@prisma/client";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { resolveUserCompany } from "../services/company.service";
-import { deleteFile, uploadFile } from "../services/cloudinary.service";
+import { deleteFile, getSignedDeliveryUrl, uploadFile } from "../services/cloudinary.service";
 import { ensureTaskAttachmentsFolder } from "../services/document.service";
 import { emitTaskEvent, logActivity, requireTaskInCompany, TaskServiceError } from "../services/task.service";
 
@@ -94,9 +94,19 @@ export const createAttachment = async (req: AuthRequest, res: Response) => {
       fileName: attachment.fileName,
     });
 
-    emitTaskEvent(company.id, "TASK_ATTACHMENT_CREATED", { taskId: task.id, attachment });
+    const attachmentWithSignedUrl = {
+      ...attachment,
+      fileUrl: getSignedDeliveryUrl({
+        publicId: attachment.publicId,
+        fileUrl: attachment.fileUrl,
+        fileName: attachment.fileName,
+        fileType: attachment.fileType,
+      }),
+    };
 
-    return res.status(201).json({ attachment });
+    emitTaskEvent(company.id, "TASK_ATTACHMENT_CREATED", { taskId: task.id, attachment: attachmentWithSignedUrl });
+
+    return res.status(201).json({ attachment: attachmentWithSignedUrl });
   } catch (error) {
     return handleError(res, error, "Erro ao criar anexo:");
   }

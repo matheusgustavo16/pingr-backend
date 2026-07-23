@@ -19,14 +19,17 @@ export function getAgentProvider(provider: AgentLLMProvider): AgentProvider {
 
 /**
  * Fallback por env, usado só se um agente não tiver provider configurado
- * (não deveria acontecer — Agent.provider tem default ANTHROPIC). Permite
+ * (não deveria acontecer — Agent.provider tem default DEEPSEEK). Permite
  * rodar o agente Pinguelo sem depender de uma chave específica.
+ *
+ * DeepSeek é o provider padrão da Pingr — OpenAI como fallback, Anthropic só
+ * em último caso.
  */
 export function getDefaultAgentProvider(): AgentProvider {
-  if (process.env.ANTHROPIC_API_KEY) return anthropicProvider;
-  if (process.env.OPENAI_API_KEY) return openaiProvider;
   if (process.env.DEEPSEEK_API_KEY) return deepseekProvider;
+  if (process.env.OPENAI_API_KEY) return openaiProvider;
+  if (process.env.ANTHROPIC_API_KEY) return anthropicProvider;
   throw new Error(
-    "Nenhum provider de IA configurado — defina ANTHROPIC_API_KEY, OPENAI_API_KEY ou DEEPSEEK_API_KEY"
+    "Nenhum provider de IA configurado — defina DEEPSEEK_API_KEY, OPENAI_API_KEY ou ANTHROPIC_API_KEY"
   );
 }

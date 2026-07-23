@@ -54,9 +54,26 @@ export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig): 
       },
     }));
 
+    // DeepSeek (deepseek-chat) não tem visão — imagem só é anexada quando o
+    // provider é de fato "openai" (a UI já esconde a ação de "explicar
+    // imagem" pra agentes DeepSeek; isso aqui é defesa redundante).
+    const currentUserContent: ChatCompletionMessageParam["content"] =
+      opts?.image && config.name === "openai"
+        ? [
+            { type: "text", text: message },
+            {
+              type: "image_url",
+              image_url: { url: `data:${opts.image.mediaType};base64,${opts.image.data}` },
+            },
+          ]
+        : message;
+
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: system },
-      { role: "user", content: message },
+      ...(opts?.history ?? []).map(
+        (h): ChatCompletionMessageParam => ({ role: h.role, content: h.content })
+      ),
+      { role: "user", content: currentUserContent },
     ];
 
     const availableToolNames = toolSchemas.map((t) => (t.type === "function" ? t.function.name : t.type));

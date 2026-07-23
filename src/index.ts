@@ -19,8 +19,11 @@ import taskRoutes from "./routes/task.routes";
 import decorationRoutes from "./routes/decoration.routes";
 import documentRoutes from "./routes/document.routes";
 import knowledgeRoutes from "./routes/knowledge.routes";
+import postGeneratorRoutes from "./routes/post-generator.routes";
 import { WebSocketServer } from "./ws/socket-server";
 import { knowledgeEmbeddingService } from "./services/knowledge/knowledge-embedding.service";
+import { postTemplateService } from "./services/post-template/post-template.service";
+import { postGenerationService } from "./services/post-generation/post-generation.service";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -58,11 +61,19 @@ app.use("/tasks", taskRoutes);
 app.use("/decorations", decorationRoutes);
 app.use("/documents", documentRoutes);
 app.use("/knowledge", knowledgeRoutes);
+app.use("/post-generator", postGeneratorRoutes);
 
 try {
   knowledgeEmbeddingService.startWorker();
 } catch (err: any) {
   console.warn(`[knowledge-embedding] worker não iniciado: ${err?.message}`);
+}
+
+try {
+  postTemplateService.startWorker();
+  postGenerationService.startWorker();
+} catch (err: any) {
+  console.warn(`[post-generator] workers não iniciados: ${err?.message}`);
 }
 
 httpServer.listen(port, () => {

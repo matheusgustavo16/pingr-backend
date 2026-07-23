@@ -16,6 +16,12 @@ async function requireCompanyAdmin(userId: string, companyId: string) {
   return !!member && (member.role === "OWNER" || member.role === "ADMIN");
 }
 
+/** Lê largura/altura do logical screen descriptor do GIF (bytes 6-9), sem depender de libs de imagem. */
+function parseGifDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length < 10 || buffer.toString("ascii", 0, 3) !== "GIF") return null;
+  return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
+}
+
 /**
  * GET /agents?companyId=
  */
@@ -170,6 +176,43 @@ export const updateAgent = async (req: AuthRequest, res: Response) => {
     if (error.message === "Agente não encontrado") {
       return res.status(404).json({ error: error.message });
     }
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * POST /agents/avatar
+ * Sobe a foto/avatar de um agente pro Cloudinary e devolve a URL. Não
+ * depende de agentId — usada tanto na criação (agente ainda não existe)
+ * quanto na edição, o form manda a URL junto no payload de create/update.
+ * GIFs só são aceitos em proporção 1:1 (não dá pra recortar sem quebrar a
+ * animação, então a validação de quadrado perfeito é obrigatória aqui).
+ */
+export const uploadAgentAvatar = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { companyId } = req.body as { companyId?: string };
+
+    if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
+    if (!companyId) return res.status(400).json({ error: "companyId é obrigatório" });
+    if (!req.file) return res.status(400).json({ error: "Nenhum arquivo enviado" });
+
+    const isAdmin = await requireCompanyAdmin(userId, companyId);
+    if (!isAdmin) return res.status(403).json({ error: "Acesso negado" });
+
+    if (req.file.mimetype === "image/gif") {
+      const dimensions = parseGifDimensions(req.file.buffer);
+      if (!dimensions || dimensions.width !== dimensions.height) {
+        return res.status(400).json({ error: "GIFs precisam ter proporção quadrada (1:1)" });
+      }
+    }
+
+    const { uploadImage } = await import("../services/cloudinary.service");
+    const uploadResult = await uploadImage(req.file.buffer, "agent-avatars", companyId);
+
+    return res.status(201).json({ url: uploadResult.url });
+  } catch (error) {
+    console.error("Erro ao subir avatar do agente:", error);
     return res.status(500).json({ error: "Erro interno do servidor" });
   }
 };

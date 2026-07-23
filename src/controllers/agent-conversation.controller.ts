@@ -107,10 +107,20 @@ export const queryConversation = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
     const { id } = req.params;
-    const { companyId, message, agentId } = req.body as {
+    const { companyId, message, agentId, context, image } = req.body as {
       companyId?: string;
       message?: string;
       agentId?: string;
+      /** Documento aberto no viewer no momento da pergunta (painel de IA do PDF). */
+      context?: {
+        documentName?: string;
+        pageNumber?: number;
+        totalPages?: number;
+        selectedText?: string;
+        pageText?: string;
+      };
+      /** Página renderizada como imagem base64 — "explicar imagem". */
+      image?: { data?: string; mediaType?: string };
     };
     if (!userId) return res.status(401).json({ error: "Usuário não autenticado" });
     if (!companyId) return res.status(400).json({ error: "companyId é obrigatório" });
@@ -118,12 +128,27 @@ export const queryConversation = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "message é obrigatório" });
     }
 
+    const documentContext =
+      context?.documentName && typeof context.pageNumber === "number"
+        ? {
+            documentName: context.documentName,
+            pageNumber: context.pageNumber,
+            totalPages: context.totalPages,
+            selectedText: context.selectedText,
+            pageText: context.pageText,
+          }
+        : undefined;
+
+    const validImage = image?.data && image?.mediaType ? { data: image.data, mediaType: image.mediaType } : undefined;
+
     const { userMessage, agentMessage } = await AgentConversationService.postMessage({
       conversationId: id,
       userId,
       companyId,
       message: message.trim(),
       agentId,
+      documentContext,
+      image: validImage,
     });
 
     return res.status(200).json({ userMessage, agentMessage });

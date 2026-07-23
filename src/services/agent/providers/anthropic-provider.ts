@@ -45,7 +45,26 @@ async function run(
   }));
   const availableToolNames = toolSchemas.map((t) => t.name);
 
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: message }];
+  const history: Anthropic.MessageParam[] = (opts?.history ?? []).map((h) => ({
+    role: h.role,
+    content: h.content,
+  }));
+
+  const currentUserContent: Anthropic.MessageParam["content"] = opts?.image
+    ? [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: opts.image.mediaType as Anthropic.Base64ImageSource["media_type"],
+            data: opts.image.data,
+          },
+        },
+        { type: "text", text: message },
+      ]
+    : message;
+
+  const messages: Anthropic.MessageParam[] = [...history, { role: "user", content: currentUserContent }];
 
   let forceToolChoice = false;
   let finalOutput: string | null = null;

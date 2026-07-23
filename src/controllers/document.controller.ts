@@ -2,7 +2,7 @@ import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { resolveUserCompany } from "../services/company.service";
-import { deleteFile, uploadFile } from "../services/cloudinary.service";
+import { deleteFile, getSignedDeliveryUrl, uploadFile } from "../services/cloudinary.service";
 import { DocumentServiceError, requireDocumentInCompany, requireFolderInCompany } from "../services/document.service";
 import { updateDocumentSchema } from "../schemas/document.schema";
 
@@ -65,7 +65,17 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
       },
     });
 
-    return res.status(201).json({ document });
+    return res.status(201).json({
+      document: {
+        ...document,
+        fileUrl: getSignedDeliveryUrl({
+          publicId: document.publicId,
+          fileUrl: document.fileUrl,
+          fileName: document.fileName,
+          fileType: document.fileType,
+        }),
+      },
+    });
   } catch (error) {
     return handleError(res, error, "Erro ao enviar documento:");
   }
@@ -121,7 +131,17 @@ export const updateDocument = async (req: AuthRequest, res: Response) => {
       },
     });
 
-    return res.json({ document: updated });
+    return res.json({
+      document: {
+        ...updated,
+        fileUrl: getSignedDeliveryUrl({
+          publicId: updated.publicId,
+          fileUrl: updated.fileUrl,
+          fileName: updated.fileName,
+          fileType: updated.fileType,
+        }),
+      },
+    });
   } catch (error) {
     return handleError(res, error, "Erro ao atualizar documento:");
   }

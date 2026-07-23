@@ -72,7 +72,7 @@ const TEMPLATES: Array<{
   allowedTools: string[];
 }> = [
   {
-    name: "Silvio Santos",
+    name: "Atlas",
     age: 45,
     specialty: "tráfego pago",
     philosophy:
@@ -81,7 +81,7 @@ const TEMPLATES: Array<{
     allowedTools: ["getSchedule", "createTask", "postChatMessage"],
   },
   {
-    name: "Clarice Mendes",
+    name: "Aura",
     age: 38,
     specialty: "redação e conteúdo",
     philosophy:
@@ -90,7 +90,7 @@ const TEMPLATES: Array<{
     allowedTools: ["createFolder", "postChatMessage"],
   },
   {
-    name: "Roberto Aguiar",
+    name: "Pulse",
     age: 52,
     specialty: "finanças e controladoria",
     philosophy:

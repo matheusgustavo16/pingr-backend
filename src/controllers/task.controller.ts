@@ -3,6 +3,7 @@ import { Prisma, TaskActivityType, TaskPriority, TaskStatus } from "@prisma/clie
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { resolveUserCompany } from "../services/company.service";
+import { getSignedDeliveryUrl } from "../services/cloudinary.service";
 import {
   assertAssigneeInCompany,
   createTask as createTaskService,
@@ -176,7 +177,20 @@ export const getTask = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Task não encontrada" });
     }
 
-    return res.json({ task });
+    const taskWithSignedAttachments = {
+      ...task,
+      attachments: task.attachments.map((attachment) => ({
+        ...attachment,
+        fileUrl: getSignedDeliveryUrl({
+          publicId: attachment.publicId,
+          fileUrl: attachment.fileUrl,
+          fileName: attachment.fileName,
+          fileType: attachment.fileType,
+        }),
+      })),
+    };
+
+    return res.json({ task: taskWithSignedAttachments });
   } catch (error) {
     return handleTaskError(res, error, "Erro ao buscar task:");
   }

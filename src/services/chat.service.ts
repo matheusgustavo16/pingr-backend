@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.service";
+import { getSignedDeliveryUrl } from "./cloudinary.service";
 import { MessageType, ChatRole, MemberStatus } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import { NotificationService } from "./notification.service";
@@ -270,8 +271,44 @@ export class ChatService {
     // Reverter ordem para mostrar mais antigas primeiro
     messagesToReturn.reverse();
 
+    // metadata.fileUrl é congelado no momento do envio e fica obsoleto pra
+    // arquivos "raw" (a URL assinada não tem prazo hoje, mas não confiamos
+    // nisso pra sempre) — reconstitui via Document (fonte da verdade) em
+    // vez de confiar na cópia congelada.
+    const fileDocumentIds = messagesToReturn
+      .filter((msg) => msg.type === MessageType.FILE)
+      .map((msg) => (msg.metadata as Record<string, unknown> | null)?.documentId)
+      .filter((id): id is string => typeof id === "string");
+
+    const documentsById = fileDocumentIds.length
+      ? new Map(
+          (
+            await prisma.document.findMany({
+              where: { id: { in: fileDocumentIds } },
+              select: { id: true, publicId: true, fileName: true, fileType: true },
+            })
+          ).map((doc) => [doc.id, doc])
+        )
+      : new Map<string, { id: string; publicId: string; fileName: string; fileType: string | null }>();
+
     return {
-      messages: messagesToReturn.map((msg) => ({
+      messages: messagesToReturn.map((msg) => {
+        const rawMetadata = (msg.metadata as Record<string, unknown> | null) ?? null;
+        const documentId = rawMetadata?.documentId;
+        const doc = typeof documentId === "string" ? documentsById.get(documentId) : undefined;
+        const metadata = doc
+          ? {
+              ...rawMetadata,
+              fileUrl: getSignedDeliveryUrl({
+                publicId: doc.publicId,
+                fileUrl: rawMetadata?.fileUrl as string,
+                fileName: doc.fileName,
+                fileType: doc.fileType,
+              }),
+            }
+          : rawMetadata;
+
+        return {
         id: msg.id,
         content: msg.content,
         type: msg.type,
@@ -280,7 +317,7 @@ export class ChatService {
         isEdited: msg.isEdited,
         isDeleted: msg.isDeleted,
         isPinned: msg.isPinned,
-        metadata: (msg.metadata as Record<string, unknown> | null) ?? null,
+        metadata,
         author: msg.author
           ? {
               id: msg.author.id,
@@ -296,7 +333,8 @@ export class ChatService {
               picture: msg.bot.picture,
             }
           : null,
-      })),
+        };
+      }),
       nextCursor: hasMore
         ? messagesToReturn[messagesToReturn.length - 1].createdAt.toISOString()
         : null,
@@ -563,7 +601,16 @@ export class ChatService {
         data: {
           metadata: {
             documentId: doc.id,
-            fileUrl: doc.fileUrl,
+            // fileUrl aqui é só um cache best-effort do momento do envio —
+            // resources "raw" (private) exigem URL assinada com signature/
+            // timestamp; listMessages sempre recalcula na leitura via
+            // getSignedDeliveryUrl (o Document é a fonte da verdade).
+            fileUrl: getSignedDeliveryUrl({
+              publicId: doc.publicId,
+              fileUrl: doc.fileUrl,
+              fileName: doc.fileName,
+              fileType: doc.fileType,
+            }),
             fileName: doc.fileName,
             fileType: doc.fileType,
             fileSize: doc.fileSize,

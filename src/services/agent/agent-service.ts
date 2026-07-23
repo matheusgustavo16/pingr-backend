@@ -6,13 +6,21 @@ import { agentActionLogService } from "./agent-action-log.service";
 import { ChatService } from "../chat.service";
 import { prisma } from "../prisma.service";
 import { getAgentProvider } from "./providers";
-import { buildSystemPrompt } from "./providers/system-prompt";
+import { buildSystemPrompt, type DocumentContext } from "./providers/system-prompt";
+import type { AgentProviderHistoryEntry, AgentProviderImage } from "./providers/types";
 
 export interface RunAgentQueryParams {
   ctx: Omit<AgentContext, "agentId">;
   agentId?: string | null;
   message: string;
   trigger: AgentTriggerType;
+  /** Turnos anteriores da conversa — threading de memória multi-turn (só o
+   *  fluxo agent-conversation usa isso hoje; @menção em sala não). */
+  history?: AgentProviderHistoryEntry[];
+  /** Documento aberto no viewer no momento da pergunta (painel de IA do PDF). */
+  documentContext?: DocumentContext;
+  /** Página renderizada como imagem — "explicar imagem" do painel de IA do PDF. */
+  image?: AgentProviderImage;
 }
 
 export interface RunAgentQueryResult {
@@ -64,7 +72,10 @@ export async function runAgentQuery(
 
   const tools = agentTools.filter((t) => agent.allowedTools.includes(t.name));
   const provider = getAgentProvider(agent.provider);
-  const system = buildSystemPrompt(ctx, agent);
+  const system = buildSystemPrompt(ctx, agent, {
+    hasHistory: !!params.history?.length,
+    documentContext: params.documentContext,
+  });
 
   console.log(
     `[agent-service] agentId=${agent.id} name="${agent.name}" provider=${agent.provider} model=${agent.model ?? "default"} allowedTools=${JSON.stringify(agent.allowedTools)} resolvedTools=${JSON.stringify(tools.map((t) => t.name))} message="${message.slice(0, 200)}"`
@@ -72,6 +83,8 @@ export async function runAgentQuery(
 
   const result = await provider.run(ctx, message, tools, system, {
     model: agent.model ?? undefined,
+    history: params.history,
+    image: params.image,
   });
 
   console.log(

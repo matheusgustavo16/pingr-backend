@@ -53,6 +53,72 @@ export async function ensureTaskAttachmentsFolder(companyId: string, createdById
   });
 }
 
+export const POST_GENERATOR_ROOT_FOLDER_TITLE = "Gerador de Posts";
+export const POST_GENERATOR_TEMPLATES_FOLDER_TITLE = "Templates";
+export const POST_GENERATOR_GENERATIONS_FOLDER_TITLE = "Gerações";
+
+/**
+ * Garante a pasta raiz "Gerador de Posts" na empresa (workspace null) — pai
+ * comum de "Templates" e "Gerações". Idempotente, reaproveita se já existir.
+ */
+async function ensurePostGeneratorRootFolder(companyId: string, createdById: string) {
+  const existing = await prisma.folder.findFirst({
+    where: { companyId, title: POST_GENERATOR_ROOT_FOLDER_TITLE, parentId: null, workspaceId: null },
+  });
+  if (existing) return existing;
+
+  return prisma.folder.create({
+    data: { title: POST_GENERATOR_ROOT_FOLDER_TITLE, companyId, parentId: null, workspaceId: null, createdById },
+  });
+}
+
+/**
+ * Garante a árvore "Gerador de Posts" -> "Templates" na empresa (workspace null),
+ * onde caem os documentos espelhados a partir dos templates de post. Mesmo
+ * princípio de ensureTaskAttachmentsFolder — idempotente, reaproveita se já existir.
+ */
+export async function ensurePostGeneratorTemplatesFolder(companyId: string, createdById: string) {
+  const root = await ensurePostGeneratorRootFolder(companyId, createdById);
+
+  const existing = await prisma.folder.findFirst({
+    where: { companyId, title: POST_GENERATOR_TEMPLATES_FOLDER_TITLE, parentId: root.id, workspaceId: null },
+  });
+  if (existing) return existing;
+
+  return prisma.folder.create({
+    data: {
+      title: POST_GENERATOR_TEMPLATES_FOLDER_TITLE,
+      companyId,
+      parentId: root.id,
+      workspaceId: null,
+      createdById,
+    },
+  });
+}
+
+/**
+ * Garante a árvore "Gerador de Posts" -> "Gerações" na empresa (workspace null),
+ * onde caem os documentos espelhados a partir dos resultados de geração de post.
+ */
+export async function ensurePostGeneratorGenerationsFolder(companyId: string, createdById: string) {
+  const root = await ensurePostGeneratorRootFolder(companyId, createdById);
+
+  const existing = await prisma.folder.findFirst({
+    where: { companyId, title: POST_GENERATOR_GENERATIONS_FOLDER_TITLE, parentId: root.id, workspaceId: null },
+  });
+  if (existing) return existing;
+
+  return prisma.folder.create({
+    data: {
+      title: POST_GENERATOR_GENERATIONS_FOLDER_TITLE,
+      companyId,
+      parentId: root.id,
+      workspaceId: null,
+      createdById,
+    },
+  });
+}
+
 /**
  * Sobe a cadeia de pais raiz->atual pra montar o breadcrumb. Guard de profundidade
  * é só defesa contra ciclo acidental — o app nunca deveria produzir um.

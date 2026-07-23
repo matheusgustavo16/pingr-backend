@@ -20,28 +20,30 @@ model User {
   locale      String     @default("pt-BR")
   preferences Json       @default("{}")
 
-  twoFactor             TwoFactor[]
-  ownedCompanies        Company[]           @relation("CompanyOwner")
-  memberships           CompanyMember[]
-  chatMessages          ChatMessage[]
-  chatReadStates        ChatReadState[]
-  chatParticipants      ChatParticipant[]
-  createdScheduleEvents ScheduleEvent[]     @relation("ScheduleEventCreator")
-  integrations          Integration[]
-  notifications         Notification[]
-  startedCallSessions   CallSession[]       @relation("CallSessionStarter")
-  transcriptSegments    TranscriptSegment[]
-  agentActionLogs       AgentActionLog[]
-  createdTasks          Task[]              @relation("TaskCreator")
-  assignedTasks         TaskAssignee[]      @relation("TaskAssignee")
-  watchedTasks          TaskWatcher[]       @relation("TaskWatcher")
-  taskComments          TaskComment[]       @relation("TaskCommentAuthor")
-  taskAttachments       TaskAttachment[]    @relation("TaskAttachmentUploader")
-  taskActivities        TaskActivity[]      @relation("TaskActivityActor")
-  createdFolders        Folder[]            @relation("FolderCreator")
-  uploadedDocuments     Document[]          @relation("DocumentUploader")
-  createdAgents         Agent[]
-  createdConversations  AgentConversation[]
+  twoFactor              TwoFactor[]
+  ownedCompanies         Company[]           @relation("CompanyOwner")
+  memberships            CompanyMember[]
+  chatMessages           ChatMessage[]
+  chatReadStates         ChatReadState[]
+  chatParticipants       ChatParticipant[]
+  createdScheduleEvents  ScheduleEvent[]     @relation("ScheduleEventCreator")
+  integrations           Integration[]
+  notifications          Notification[]
+  startedCallSessions    CallSession[]       @relation("CallSessionStarter")
+  transcriptSegments     TranscriptSegment[]
+  agentActionLogs        AgentActionLog[]
+  createdTasks           Task[]              @relation("TaskCreator")
+  assignedTasks          TaskAssignee[]      @relation("TaskAssignee")
+  watchedTasks           TaskWatcher[]       @relation("TaskWatcher")
+  taskComments           TaskComment[]       @relation("TaskCommentAuthor")
+  taskAttachments        TaskAttachment[]    @relation("TaskAttachmentUploader")
+  taskActivities         TaskActivity[]      @relation("TaskActivityActor")
+  createdFolders         Folder[]            @relation("FolderCreator")
+  uploadedDocuments      Document[]          @relation("DocumentUploader")
+  createdAgents          Agent[]
+  createdConversations   AgentConversation[]
+  createdPostTemplates   PostTemplate[]
+  createdPostGenerations PostGeneration[]
 
   @@map("users")
 }
@@ -88,6 +90,8 @@ model Company {
   knowledgeChunks     KnowledgeChunk[]
   knowledgeUsages     KnowledgeUsage[]
   knowledgeSearchLogs KnowledgeSearchLog[]
+  postTemplates       PostTemplate[]
+  postGenerations     PostGeneration[]
 
   @@map("companies")
 }
@@ -315,7 +319,7 @@ model Agent {
 
   // Provider/model por agente — sobrepõe o default de env. Não confundir
   // com ChatBot.provider (marcador de identidade de chat, valores diferentes).
-  provider AgentLLMProvider @default(ANTHROPIC)
+  provider AgentLLMProvider @default(DEEPSEEK)
   model    String?
 
   // Escopo de tools que este agente pode chamar (nomes de ToolDef.name)
@@ -998,6 +1002,17 @@ model Document {
   chatMessageId String?      @unique
   chatMessage   ChatMessage? @relation(fields: [chatMessageId], references: [id], onDelete: Cascade)
 
+  /// Quando o arquivo veio de um upload de template do Gerador de Conteúdo (mesmo publicId/arquivo no Cloudinary).
+  postTemplateId String?       @unique
+  postTemplate   PostTemplate? @relation(fields: [postTemplateId], references: [id], onDelete: Cascade)
+
+  /// Quando o arquivo é o resultado de uma geração do Gerador de Conteúdo (mesmo publicId/arquivo no Cloudinary).
+  postGenerationId String?         @unique
+  postGeneration   PostGeneration? @relation(fields: [postGenerationId], references: [id], onDelete: Cascade)
+
+  /// Documentos anexados como referência em gerações do Gerador de Conteúdo.
+  postGenerationAttachments PostGeneration[] @relation("PostGenerationAttachments")
+
   @@index([companyId, folderId])
   @@index([companyId, workspaceId])
   @@index([categoryId])
@@ -1080,4 +1095,85 @@ model KnowledgeUsage {
 
   @@index([companyId, createdAt])
   @@map("knowledge_usage")
+}
+
+// Gerador de Conteúdo: status compartilhado pelos dois jobs assíncronos
+// (análise de template por visão e geração de post via Replicate).
+enum PostAssetJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum PostResultType {
+  IMAGE
+  VIDEO
+}
+
+// Imagem de referência enviada pelo usuário na aba Templates. Após o upload,
+// uma fila assíncrona (post-template.service.ts) manda a imagem pra um
+// provider de IA com visão e grava a descrição textual aqui. O mesmo asset
+// Cloudinary também vira um Document (via Document.postTemplateId), pra
+// aparecer em Documentos → Gerador de Posts → Templates sem duplicar storage.
+model PostTemplate {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId   String
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdById String
+  createdBy   User    @relation(fields: [createdById], references: [id])
+
+  fileName String
+  fileUrl  String
+  publicId String
+
+  description  String?
+  status       PostAssetJobStatus @default(PENDING)
+  errorMessage String?
+
+  document Document?
+
+  generations PostGeneration[] @relation("PostGenerationTemplates")
+
+  @@index([companyId])
+  @@map("post_templates")
+}
+
+// Uma geração de post (histórico da aba Gerador). Processada assincronamente
+// via fila BullMQ (post-generation.service.ts) chamando a API do Replicate.
+model PostGeneration {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyId   String
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdById String
+  createdBy   User    @relation(fields: [createdById], references: [id])
+
+  prompt     String
+  resultType PostResultType @default(IMAGE)
+
+  replicateModel        String
+  replicatePredictionId String?
+
+  status       PostAssetJobStatus @default(PENDING)
+  errorMessage String?
+
+  resultUrl String?
+  publicId  String?
+
+  templates PostTemplate[] @relation("PostGenerationTemplates")
+
+  /// Documentos da empresa anexados como referência (imagens viram image_input da IA).
+  attachments Document[] @relation("PostGenerationAttachments")
+
+  /// Document espelhado em Documentos → Gerador de Posts → Gerações quando a geração completa.
+  document Document?
+
+  @@index([companyId, createdAt])
+  @@map("post_generations")
 }

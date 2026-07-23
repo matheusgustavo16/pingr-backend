@@ -101,18 +101,11 @@ async function runOpenAiCompatible(
  * Mesma ordem de fallback por env de getDefaultAgentProvider() (ver
  * services/agent/providers/index.ts), mas com um provider próprio pedindo
  * saída JSON estrita em vez do loop de tool-calling do agente de voz/chat.
+ *
+ * DeepSeek é o provider padrão da Pingr — OpenAI como fallback, Anthropic só
+ * em último caso.
  */
 export async function generateMeetingSummary(transcript: string): Promise<SummaryResult> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return runAnthropic(transcript);
-  }
-  if (process.env.OPENAI_API_KEY) {
-    return runOpenAiCompatible(transcript, {
-      providerName: "openai",
-      apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || "gpt-4o",
-    });
-  }
   if (process.env.DEEPSEEK_API_KEY) {
     return runOpenAiCompatible(transcript, {
       providerName: "deepseek",
@@ -121,7 +114,17 @@ export async function generateMeetingSummary(transcript: string): Promise<Summar
       model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
     });
   }
+  if (process.env.OPENAI_API_KEY) {
+    return runOpenAiCompatible(transcript, {
+      providerName: "openai",
+      apiKey: process.env.OPENAI_API_KEY,
+      model: process.env.OPENAI_MODEL || "gpt-4o",
+    });
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return runAnthropic(transcript);
+  }
   throw new Error(
-    "Nenhum provider de IA configurado — defina ANTHROPIC_API_KEY, OPENAI_API_KEY ou DEEPSEEK_API_KEY"
+    "Nenhum provider de IA configurado — defina DEEPSEEK_API_KEY, OPENAI_API_KEY ou ANTHROPIC_API_KEY"
   );
 }

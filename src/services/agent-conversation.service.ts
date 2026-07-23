@@ -2,6 +2,12 @@ import { AgentActionStatus, AgentTriggerType, ConversationVisibility, MessageRol
 import { prisma } from "./prisma.service";
 import { ChatService } from "./chat.service";
 import { runAgentQuery } from "./agent/agent-service";
+import type { AgentProviderHistoryEntry, AgentProviderImage } from "./agent/providers/types";
+import type { DocumentContext } from "./agent/providers/system-prompt";
+
+// Cap de turnos anteriores threadados no provider — histórico ilimitado
+// estouraria a janela de contexto do modelo em conversas longas.
+const MAX_HISTORY_MESSAGES = 10;
 
 export class ConversationServiceError extends Error {
   status: number;
@@ -98,8 +104,22 @@ async function postMessage(params: {
   companyId: string;
   message: string;
   agentId?: string | null;
+  documentContext?: DocumentContext;
+  image?: AgentProviderImage;
 }) {
   const conversation = await requireConversationAccess(params.conversationId, params.userId, params.companyId);
+
+  // Busca histórico ANTES de criar a mensagem nova, senão ela apareceria
+  // duplicada (uma vez no histórico, outra como `message` do turno atual).
+  const priorMessages = await prisma.agentConversationMessage.findMany({
+    where: { conversationId: conversation.id },
+    orderBy: { createdAt: "desc" },
+    take: MAX_HISTORY_MESSAGES,
+    select: { role: true, content: true },
+  });
+  const history: AgentProviderHistoryEntry[] = priorMessages
+    .reverse()
+    .map((m) => ({ role: m.role === MessageRole.USER ? "user" : "assistant", content: m.content }));
 
   const userMessage = await prisma.agentConversationMessage.create({
     data: { conversationId: conversation.id, role: MessageRole.USER, content: params.message },
@@ -118,6 +138,9 @@ async function postMessage(params: {
       agentId: params.agentId,
       message: params.message,
       trigger: AgentTriggerType.CHAT_MESSAGE,
+      history,
+      documentContext: params.documentContext,
+      image: params.image,
     });
 
     agentMessage = await prisma.agentConversationMessage.create({

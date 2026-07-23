@@ -2,7 +2,7 @@ import { Response } from "express";
 import { prisma } from "../services/prisma.service";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { resolveUserCompany } from "../services/company.service";
-import { deleteFile } from "../services/cloudinary.service";
+import { deleteFile, getSignedDeliveryUrl } from "../services/cloudinary.service";
 import {
   assertNotDescendant,
   collectFolderSubtreeIds,
@@ -56,7 +56,17 @@ export const listFolderContents = async (req: AuthRequest, res: Response) => {
       }),
     ]);
 
-    return res.json({ currentFolder, breadcrumb, folders, documents });
+    const documentsWithSignedUrls = documents.map((doc) => ({
+      ...doc,
+      fileUrl: getSignedDeliveryUrl({
+        publicId: doc.publicId,
+        fileUrl: doc.fileUrl,
+        fileName: doc.fileName,
+        fileType: doc.fileType,
+      }),
+    }));
+
+    return res.json({ currentFolder, breadcrumb, folders, documents: documentsWithSignedUrls });
   } catch (error) {
     return handleError(res, error, "Erro ao listar conteúdo da pasta:");
   }
