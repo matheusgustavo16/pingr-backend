@@ -2205,6 +2205,11 @@ pkg-types@^2.2.0, pkg-types@^2.3.0:
     exsolve "^1.0.7"
     pathe "^2.0.3"
 
+postal-mime@2.7.5:
+  version "2.7.5"
+  resolved "https://registry.npmjs.org/postal-mime/-/postal-mime-2.7.5.tgz"
+  integrity sha512-GNEXKvWFQnbgO5NlrGzVa0FmWzBZ24PersAWErttSg1Hjpf0ATxTwS5DOMGaOpTG6bUh5cTr7xi0jAD942wCJA==
+
 postcss@^8.5.16:
   version "8.5.19"
   resolved "https://registry.npmjs.org/postcss/-/postcss-8.5.19.tgz"
@@ -2399,6 +2404,14 @@ replicate@^1.4.0:
   integrity sha512-1ufKejfUVz/azy+5TnzQP7U1+MHVWZ6psnQ06az8byUUnRhT+DZ/MvewzB1NQYBVMgNKR7xPDtTwlcP5nv/5+w==
   optionalDependencies:
     readable-stream ">=4.0.0"
+
+resend@^6.18.0:
+  version "6.18.0"
+  resolved "https://registry.npmjs.org/resend/-/resend-6.18.0.tgz"
+  integrity sha512-EjxZ9AVzywJgOlUoIJe9ytBWVrfbUtJbjeoLnRSvpU1sv97Hh9DSwhw+k8kiujrG4Rg4bzTBsjlmwWWuoOxSug==
+  dependencies:
+    postal-mime "2.7.5"
+    standardwebhooks "1.0.0"
 
 retry@^0.12.0:
   version "0.12.0"
@@ -2642,7 +2655,7 @@ standard-as-callback@2.1.0:
   resolved "https://registry.npmjs.org/standard-as-callback/-/standard-as-callback-2.1.0.tgz"
   integrity sha512-qoRRSyROncaz1z0mvYqIE4lCd9p2R90i6GxW3uZv5ucSu8tU7B5HXUP1gG8pVZsYNVaXjk8ClXHPttLyxAL48A==
 
-standardwebhooks@^1.0.0:
+standardwebhooks@^1.0.0, standardwebhooks@1.0.0:
   version "1.0.0"
   resolved "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.0.0.tgz"
   integrity sha512-BbHGOQK9olHPMvQNHWul6MYlrRTAOKn03rOe4A8O3CLWhNf4YHBqq2HJKKC+sfqpxiBY52pNeesD6jIiLDz8jg==

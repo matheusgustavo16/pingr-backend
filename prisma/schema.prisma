@@ -46,6 +46,7 @@ model User {
   createdConversations   AgentConversation[]
   createdPostTemplates   PostTemplate[]
   createdPostGenerations PostGeneration[]
+  sentInvites            CompanyInvite[]
 
   @@map("users")
 }
@@ -71,9 +72,12 @@ model Company {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  title     String
-  cnpj      String?  @unique
-  picture   String?
+  title       String
+  cnpj        String?  @unique
+  picture     String?
+  description String?  @db.VarChar(500)
+  website     String?
+  sector      String?
 
   ownerId             String
   owner               User                 @relation("CompanyOwner", fields: [ownerId], references: [id])
@@ -94,6 +98,7 @@ model Company {
   knowledgeSearchLogs KnowledgeSearchLog[]
   postTemplates       PostTemplate[]
   postGenerations     PostGeneration[]
+  invites             CompanyInvite[]
 
   @@map("companies")
 }
@@ -158,6 +163,33 @@ model CompanyMember {
 
   @@unique([userId, companyId])
   @@map("company_members")
+}
+
+model CompanyInvite {
+  id         String       @id @default(uuid())
+  createdAt  DateTime     @default(now())
+  email      String
+  token      String       @unique
+  role       CompanyRole  @default(MEMBER)
+  status     InviteStatus @default(PENDING)
+  expiresAt  DateTime
+  acceptedAt DateTime?
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  invitedById String
+  invitedBy   User   @relation(fields: [invitedById], references: [id])
+
+  @@unique([companyId, email])
+  @@map("company_invites")
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
 }
 
 enum CompanyRole {

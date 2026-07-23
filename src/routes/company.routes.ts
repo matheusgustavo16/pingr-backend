@@ -4,6 +4,9 @@ import {
   getMyCompany,
   getPublicCompanyInfo,
   joinCompany,
+  inviteMembers,
+  getInviteInfo,
+  acceptInvite,
   getMembers,
   updateMemberStatus,
   updateCompany,
@@ -32,7 +35,12 @@ router.post(
   uploadCompanyLogo
 );
 
-// Convites / Ver empresa publicamente
+// Convites por e-mail
+router.post("/me/invites", authenticate, inviteMembers);
+router.get("/invites/:token", getInviteInfo);
+router.post("/invites/:token/accept", authenticate, acceptInvite);
+
+// Convites por link / Ver empresa publicamente
 router.get("/:id/public", getPublicCompanyInfo);
 router.post("/:id/join", authenticate, joinCompany);
 

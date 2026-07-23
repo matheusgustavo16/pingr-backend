@@ -1,13 +1,17 @@
 import { Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import { randomBytes } from "crypto";
 import { prisma } from "../services/prisma.service";
-import { validateName } from "../utils/validation";
+import { validateName, validateEmail } from "../utils/validation";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { ChatService } from "../services/chat.service";
 import { GitHubService } from "../services/github.service";
+import { EmailService } from "../services/email.service";
 import { IntegrationProvider, IntegrationStatus } from "@prisma/client";
 import { NotificationService } from "../services/notification.service";
 import { cacheGetJSON, cacheSetJSON } from "../services/cache/app-cache";
+
+const INVITE_EXPIRATION_DAYS = 7;
 
 // TTL curto de propósito: getMyCompany é compartilhado por todos os membros
 // da company (mesmo payload pra todo mundo), então cache por companyId ganha
@@ -227,6 +231,9 @@ export const getMyCompany = async (req: AuthRequest, res: Response) => {
       title: company.title,
       cnpj: company.cnpj,
       picture: company.picture,
+      description: company.description,
+      website: company.website,
+      sector: company.sector,
       ownerId: company.ownerId,
       createdAt: company.createdAt,
       rooms: company.rooms,
@@ -635,6 +642,218 @@ export const getPublicCompanyInfo = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Envia convites por e-mail para pessoas entrarem na empresa do usuário autenticado.
+ * Apenas OWNER/ADMIN podem convidar. Idempotente por (companyId, email): reenviar
+ * gera um novo token e reseta o prazo de expiração.
+ */
+export const inviteMembers = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { emails } = req.body as { emails?: string[] };
+    if (!Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ error: "Informe ao menos um e-mail" });
+    }
+
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [
+          { ownerId: userId },
+          { members: { some: { userId, status: "ACTIVE" } } },
+        ],
+      },
+      select: { id: true, title: true, picture: true },
+    });
+
+    if (!company) {
+      return res.status(404).json({ error: "Empresa não encontrada" });
+    }
+
+    const requester = await prisma.companyMember.findUnique({
+      where: { userId_companyId: { userId, companyId: company.id } },
+    });
+
+    if (!requester || (requester.role !== "OWNER" && requester.role !== "ADMIN")) {
+      return res.status(403).json({ error: "Apenas donos e administradores podem convidar" });
+    }
+
+    const inviter = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true },
+    });
+
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const uniqueEmails = Array.from(
+      new Set(emails.map((e) => (typeof e === "string" ? e.toLowerCase().trim() : "")))
+    ).filter(Boolean);
+
+    const results: Array<{ email: string; status: "sent" | "already_member" | "invalid" | "error" }> = [];
+
+    for (const email of uniqueEmails) {
+      if (!validateEmail(email)) {
+        results.push({ email, status: "invalid" });
+        continue;
+      }
+
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+      if (existingUser) {
+        const existingMembership = await prisma.companyMember.findUnique({
+          where: { userId_companyId: { userId: existingUser.id, companyId: company.id } },
+        });
+        if (existingMembership && existingMembership.status === "ACTIVE") {
+          results.push({ email, status: "already_member" });
+          continue;
+        }
+      }
+
+      try {
+        const token = randomBytes(24).toString("hex");
+        const expiresAt = new Date(Date.now() + INVITE_EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
+
+        await prisma.companyInvite.upsert({
+          where: { companyId_email: { companyId: company.id, email } },
+          update: { token, status: "PENDING", expiresAt, acceptedAt: null, invitedById: userId },
+          create: {
+            email,
+            token,
+            expiresAt,
+            companyId: company.id,
+            invitedById: userId,
+          },
+        });
+
+        await EmailService.sendCompanyInvite({
+          to: email,
+          companyName: company.title,
+          inviterName: inviter?.name || "Alguém",
+          acceptUrl: `${frontendUrl}/invite/accept/${token}`,
+        });
+
+        results.push({ email, status: "sent" });
+      } catch (error) {
+        console.error(`Erro ao convidar ${email}:`, error);
+        results.push({ email, status: "error" });
+      }
+    }
+
+    return res.json({ results });
+  } catch (error) {
+    console.error("Erro ao enviar convites:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Info pública de um convite (usada na página de aceite antes do login/cadastro).
+ */
+export const getInviteInfo = async (req: Request, res: Response) => {
+  try {
+    const { token } = req.params;
+
+    const invite = await prisma.companyInvite.findUnique({
+      where: { token },
+      include: { company: { select: { title: true, picture: true } } },
+    });
+
+    if (!invite) {
+      return res.status(404).json({ error: "Convite não encontrado" });
+    }
+
+    let status = invite.status;
+    if (status === "PENDING" && invite.expiresAt < new Date()) {
+      status = "EXPIRED";
+      await prisma.companyInvite.update({ where: { token }, data: { status: "EXPIRED" } });
+    }
+
+    return res.json({
+      invite: {
+        email: invite.email,
+        status,
+        companyName: invite.company.title,
+        companyPicture: invite.company.picture,
+      },
+    });
+  } catch (error) {
+    console.error("Erro ao buscar convite:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
+/**
+ * Aceita um convite: o usuário autenticado precisa ter o mesmo e-mail para o
+ * qual o convite foi enviado. Cria/ativa o CompanyMember correspondente.
+ */
+export const acceptInvite = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "Usuário não autenticado" });
+    }
+
+    const { token } = req.params;
+    const invite = await prisma.companyInvite.findUnique({
+      where: { token },
+      include: { company: { select: { id: true, title: true, picture: true } } },
+    });
+
+    if (!invite) {
+      return res.status(404).json({ error: "Convite não encontrado" });
+    }
+
+    if (invite.status === "ACCEPTED") {
+      return res.status(400).json({ error: "Este convite já foi utilizado" });
+    }
+    if (invite.status === "REVOKED") {
+      return res.status(400).json({ error: "Este convite foi revogado" });
+    }
+    if (invite.status === "EXPIRED" || invite.expiresAt < new Date()) {
+      await prisma.companyInvite.update({ where: { token }, data: { status: "EXPIRED" } });
+      return res.status(400).json({ error: "Este convite expirou" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    if (!user || user.email.toLowerCase() !== invite.email.toLowerCase()) {
+      return res.status(403).json({
+        error: `Este convite foi enviado para ${invite.email}. Entre com essa conta para aceitar.`,
+      });
+    }
+
+    await prisma.companyMember.upsert({
+      where: { userId_companyId: { userId, companyId: invite.companyId } },
+      update: { status: "ACTIVE" },
+      create: { userId, companyId: invite.companyId, role: invite.role, status: "ACTIVE" },
+    });
+
+    await prisma.companyInvite.update({
+      where: { token },
+      data: { status: "ACCEPTED", acceptedAt: new Date() },
+    });
+
+    try {
+      await NotificationService.create({
+        userId: invite.invitedById,
+        type: "TASK",
+        title: "Convite aceito",
+        description: `${user.email} entrou em ${invite.company.title}`,
+        actionUrl: "/office/members",
+      });
+    } catch (error) {
+      console.error("Erro ao notificar aceite de convite:", error);
+    }
+
+    return res.json({
+      company: { id: invite.company.id, title: invite.company.title, picture: invite.company.picture },
+    });
+  } catch (error) {
+    console.error("Erro ao aceitar convite:", error);
+    return res.status(500).json({ error: "Erro interno do servidor" });
+  }
+};
+
 export const joinCompany = async (req: AuthRequest, res: Response) => {
   try {
     const { id: companyId } = req.params;
@@ -841,10 +1060,16 @@ export const updateCompany = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: "Apenas o dono pode atualizar a empresa" });
     }
 
-    const { title, cnpj } = req.body;
+    const { title, cnpj, description, website, sector } = req.body;
 
     // Preparar dados para atualização
-    const updateData: { title?: string; cnpj?: string | null } = {};
+    const updateData: {
+      title?: string;
+      cnpj?: string | null;
+      description?: string | null;
+      website?: string | null;
+      sector?: string | null;
+    } = {};
 
     if (title !== undefined) {
       const nameValidation = validateName(title);
@@ -882,6 +1107,30 @@ export const updateCompany = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    if (description !== undefined) {
+      const trimmed = description === null ? null : String(description).trim();
+      if (trimmed && trimmed.length > 500) {
+        return res.status(400).json({ error: "Descrição deve ter no máximo 500 caracteres" });
+      }
+      updateData.description = trimmed || null;
+    }
+
+    if (website !== undefined) {
+      const trimmed = website === null ? null : String(website).trim();
+      if (trimmed && !/^https?:\/\/.+\..+/.test(trimmed)) {
+        return res.status(400).json({ error: "Website deve ser uma URL válida (ex: https://exemplo.com)" });
+      }
+      updateData.website = trimmed || null;
+    }
+
+    if (sector !== undefined) {
+      const trimmed = sector === null ? null : String(sector).trim();
+      if (trimmed && trimmed.length > 100) {
+        return res.status(400).json({ error: "Setor deve ter no máximo 100 caracteres" });
+      }
+      updateData.sector = trimmed || null;
+    }
+
     const updatedCompany = await prisma.company.update({
       where: { id: company.id },
       data: updateData,
@@ -890,6 +1139,9 @@ export const updateCompany = async (req: AuthRequest, res: Response) => {
         title: true,
         cnpj: true,
         picture: true,
+        description: true,
+        website: true,
+        sector: true,
         createdAt: true,
         updatedAt: true,
       },
